@@ -1,0 +1,53 @@
+{
+  "rules": {
+    "players": {
+      ".read": "auth != null",
+      "$playerId": {
+        ".read": true,
+        ".write": "auth != null && auth.uid === $playerId",
+        ".validate": "(!newData.hasChild('x') || (newData.child('x').isNumber() && newData.child('x').val() >= 0 && newData.child('x').val() <= 900)) &&
+          (!newData.hasChild('y') || (newData.child('y').isNumber() && newData.child('y').val() >= 0 && newData.child('y').val() <= 700)) &&
+          (!newData.hasChild('hp') || (newData.child('hp').isNumber() && newData.child('hp').val() >= 0 && newData.child('hp').val() <= 100)) &&
+          (!newData.hasChild('stone') || (newData.child('stone').isNumber() && newData.child('stone').val() >= 0 && newData.child('stone').val() <= 99999)) &&
+          (!newData.hasChild('wood') || (newData.child('wood').isNumber() && newData.child('wood').val() >= 0 && newData.child('wood').val() <= 99999)) &&
+          (!newData.hasChild('nickname') || (newData.child('nickname').isString() && newData.child('nickname').val().length <= 20)) &&
+          (!newData.hasChild('reputation') || (newData.child('reputation').isNumber() && newData.child('reputation').val() >= -100 && newData.child('reputation').val() <= 100)) &&
+          (!newData.hasChild('chat') || (newData.child('chat').isString() && newData.child('chat').val().length <= 100))"
+      }
+    },
+    "blocks": {
+      ".read": "auth != null",
+      "$blockKey": {
+        ".write": "auth != null",
+        ".validate": "newData.hasChild('type') &&
+          newData.child('type').val().matches('^(wall|grass|water|sign|door|totem|tnt|shop|rock|tree|drop)$') &&
+          newData.child('x').isNumber() &&
+          newData.child('x').val() >= 0 &&
+          newData.child('x').val() <= 900 &&
+          newData.child('y').isNumber() &&
+          newData.child('y').val() >= 0 &&
+          newData.child('y').val() <= 700 &&
+          $blockKey.matches('^[0-9]+_[0-9]+$') &&
+          (!newData.hasChild('stone') || (newData.child('stone').isNumber() && newData.child('stone').val() >= 0 && newData.child('stone').val() <= 9999)) &&
+          (!newData.hasChild('wood') || (newData.child('wood').isNumber() && newData.child('wood').val() >= 0 && newData.child('wood').val() <= 9999)) &&
+          (!newData.hasChild('text') || (newData.child('text').isString() && newData.child('text').val().length <= 500)) &&
+          (!newData.hasChild('hp') || (newData.child('hp').isNumber() && newData.child('hp').val() >= 0 && newData.child('hp').val() <= 10000))"
+      }
+    },
+    "server": {
+      ".read": "auth != null",
+      "announcement": {
+        ".write": "auth != null",
+        ".validate": "newData.hasChildren(['message','author','timestamp']) &&
+          newData.child('message').isString() &&
+          newData.child('message').val().length <= 200 &&
+          newData.child('author').isString() &&
+          newData.child('author').val().length <= 20 &&
+          newData.child('timestamp').isNumber()"
+      }
+    },
+    ".info": {
+      ".read": "auth != null"
+    }
+  }
+}

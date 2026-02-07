@@ -2,17 +2,30 @@
 import { db } from './network.js';
 import { getStartData } from './startData.js';
 
-const ROCK_TARGET = 25, TREE_TARGET = 25, REMAINING_PER = 8;
+/* === 경제·밸런스 상수 (Economy & Balance) === */
+const ROCK_TARGET = 25, TREE_TARGET = 25, REMAINING_PER = 6;  /* 8→6: 채집지당 수확량 감소, 인플레이션 완화 */
 const SHOUT_COST = 50;
 const REPUTATION_DISPLAY_DURATION = 3000;
 const ANNOUNCEMENT_DURATION = 5000;
 const TERRITORY_RADIUS = 20 * 32;
 const TNT_EXPLODE_DELAY = 3000;
 const TNT_EXPLODE_RADIUS = 96;
-const TNT_PLAYER_DAMAGE = 100;
+const TNT_PLAYER_DAMAGE = 100;       /* 즉사 유지 */
 const TNT_TOTEM_DAMAGE = 1000;
-const TOTEM_REPAIR_COST = 10;
+const TNT_COST_STONE = 60, TNT_COST_WOOD = 60, TNT_COST_HP = 60;  /* 50→60: TNT 비용 상승 */
+const TOTEM_REPAIR_COST = 12;       /* 10→12: 토템 수리 비용 상승 */
 const TOTEM_REPAIR_AMOUNT = 500;
+const FIST_PLAYER_DAMAGE = 25;      /* 20→25: 5회→4회 사망, 긴장감 상승 (V8) */
+const FIST_TOTEM_DAMAGE = 25;       /* 토템 주먹 데미지 */
+/* V14: 사법 시스템 */
+const PRISON_CENTER_X = 64, PRISON_CENTER_Y = 64;
+const PRISON_GRID_MIN = -16, PRISON_GRID_MAX = 176;  /* 5x5 내부 + 벽 둘러쌈 */
+const JAIL_DURATION_MS = 30000;
+const ARREST_REP_THRESHOLD = -20;   /* 이 평판 이하만 체포 가능 */
+const BATON_REP_REQUIRED = 20;      /* 진압봉 사용 최소 평판 */
+/* V15: 펫 & 커스터마이징 */
+const PET_FOLLOW_LERP = 0.08;       /* 펫 추적 부드러움 */
+const PET_FOLLOW_DIST = 40;         /* 주인과 유지 거리 */
 
 const safeVal = (v, def = null) => (v != null ? v : def);
 const safeNum = (v, def = 0) => (typeof v === 'number' && !isNaN(v) ? v : def);
@@ -51,6 +64,16 @@ export class MainScene extends Phaser.Scene {
         this.tradeEffectTimer = null;
         this.shopLabels = {};
         this._uiCache = null;
+        /* V14: 감옥 */
+        this.myIsJailed = false;
+        this.myJailedUntil = 0;
+        this.prisonBlockKeys = new Set();
+        /* V15: 펫 & 모자 */
+        this.myPetSprite = null;
+        this.myHatSprite = null;
+        this.myPetType = null;
+        this.myHatType = null;
+        this.playerPetData = {};    /* id -> { petSprite, petX, petY, petType, hatSprite, hatType } */
     }
 
     getUICache() {
@@ -82,9 +105,20 @@ export class MainScene extends Phaser.Scene {
         g.clear(); g.fillStyle(0xFFD700); g.fillRect(8, 8, 16, 20); g.fillStyle(0xFFA500); g.fillRect(10, 10, 12, 16); g.fillStyle(0xFFD700); g.fillCircle(16, 6, 6); g.lineStyle(2, 0xB8860B); g.strokeRect(8, 8, 16, 20); g.generateTexture('totem', 32, 32);
         g.clear(); g.fillStyle(0xC62828); g.fillEllipse(16, 12, 14, 6); g.fillStyle(0xB71C1C); g.fillRect(2, 12, 28, 12); g.fillEllipse(16, 24, 14, 6); g.fillStyle(0x1B5E20); g.fillRect(14, 4, 4, 8); g.lineStyle(2, 0x8B0000); g.strokeRect(2, 12, 28, 12); g.generateTexture('tnt', 32, 32);
         g.clear(); g.fillStyle(0x1976D2); g.fillRect(0, 0, 32, 32); g.fillStyle(0xFFFFFF); for (let i = 0; i < 8; i++) g.fillRect(i * 4, 0, 2, 32); g.fillStyle(0xBBDEFB); g.fillRect(8, 12, 16, 12); g.fillStyle(0x1976D2); g.fillRect(14, 4, 4, 8); g.lineStyle(2, 0x0D47A1); g.strokeRect(0, 0, 32, 32); g.generateTexture('shop', 32, 32);
+        /* V14: bedrock(감옥 벽), police_baton(진압봉) */
+        g.clear(); g.fillStyle(0x2d2d2d); g.fillRect(0, 0, 32, 32); g.fillStyle(0x1a1a1a); g.fillRect(4, 4, 24, 24); g.fillStyle(0x444444); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) g.fillRect(6 + i * 6, 6 + j * 6, 4, 4); g.lineStyle(2, 0x111111); g.strokeRect(0, 0, 32, 32); g.generateTexture('bedrock', 32, 32);
+        g.clear(); g.fillStyle(0x1565C0); g.fillRect(12, 8, 8, 24); g.fillStyle(0x0D47A1); g.fillRect(14, 6, 4, 6); g.lineStyle(2, 0x0D47A1); g.strokeRect(12, 6, 8, 26); g.generateTexture('police_baton', 32, 32);
+        /* V15: 펫 & 커스터마이징 */
+        g.clear(); g.fillStyle(0x9E9E9E); g.fillCircle(16, 18, 10); g.fillStyle(0x757575); g.fillEllipse(6, 6, 8, 10); g.fillEllipse(26, 6, 8, 10); g.fillStyle(0x424242); g.fillCircle(12, 16, 2); g.fillCircle(20, 16, 2); g.generateTexture('pet_koala', 32, 32);
+        g.clear(); g.fillStyle(0xFAFAFA); g.fillEllipse(16, 20, 12, 10); g.fillStyle(0xEEEEEE); g.fillEllipse(16, 8, 6, 14); g.fillStyle(0xF5F5F5); g.fillCircle(16, 2, 4); g.fillStyle(0x9E9E9E); g.fillCircle(14, 4, 1); g.fillCircle(18, 4, 1); g.generateTexture('pet_alpaca', 32, 32);
+        g.clear(); g.fillStyle(0x4CAF50); g.fillEllipse(16, 16, 14, 8); g.fillStyle(0x388E3C); g.fillCircle(8, 14, 3); g.fillCircle(24, 14, 3); g.fillStyle(0x2E7D32); g.fillRect(14, 20, 4, 4); g.generateTexture('pet_gecko', 32, 32);
+        g.clear(); g.fillStyle(0x212121); g.fillEllipse(16, 12, 14, 6); g.fillStyle(0x1a1a1a); g.fillRect(4, 8, 24, 8); g.fillStyle(0x37474F); g.fillRect(6, 14, 20, 2); g.lineStyle(2, 0x0D0D0D); g.strokeEllipse(16, 12, 14, 6); g.generateTexture('hat_fedora', 32, 32);
     }
 
     create() {
+        this.cameras.main.setBackgroundColor('#0a0a0b');
+        this.cameras.main.alpha = 0;
+        this.tweens.add({ targets: this.cameras.main, alpha: 1, duration: 1400, ease: 'Power2' });
         const ui = this.getUICache();
         db.ref(".info/connected").on("value", (snap) => {
             if (ui.status) {
@@ -105,9 +139,28 @@ export class MainScene extends Phaser.Scene {
         this.dropGroup = this.add.group();
         this.totemGroup = this.physics.add.staticGroup();
         this.otherPlayersGroup = this.physics.add.group();
+        this.prisonWallGroup = this.physics.add.staticGroup();
 
-        const startX = Math.floor(Math.random() * 20) * 32 + 16;
-        const startY = Math.floor(Math.random() * 15) * 32 + 16;
+        /* V14: 감옥 구역 - (0,0) 주변 5x5를 bedrock으로 둘러쌈 */
+        for (let gx = -1; gx <= 5; gx++) {
+            for (let gy = -1; gy <= 5; gy++) {
+                if (gx === -1 || gx === 5 || gy === -1 || gy === 5) {
+                    const px = gx * 32 + 16, py = gy * 32 + 16;
+                    const key = `${px}_${py}`;
+                    const block = this.prisonWallGroup.create(px, py, 'bedrock');
+                    block.body.setSize(32, 32); block.body.updateFromGameObject(); block.refreshBody();
+                    block.setDepth(5); block.setData('type', 'bedrock');
+                    this.blocks[key] = block;
+                    this.prisonBlockKeys.add(key);
+                }
+            }
+        }
+
+        let startX, startY;
+        do {
+            startX = Math.floor(Math.random() * 20) * 32 + 16;
+            startY = Math.floor(Math.random() * 15) * 32 + 16;
+        } while (startX >= PRISON_GRID_MIN && startX <= PRISON_GRID_MAX && startY >= PRISON_GRID_MIN && startY <= PRISON_GRID_MAX); /* V14: 감옥에서 스폰 방지 */
 
         this.myPlayer = this.physics.add.sprite(startX, startY, 'dude');
         this.myPlayer.setTint(this.myColor);
@@ -135,6 +188,8 @@ export class MainScene extends Phaser.Scene {
         this.physics.add.collider(this.myPlayer, this.resourceGroup);
         this.physics.add.collider(this.myPlayer, this.totemGroup);
         this.physics.add.collider(this.myPlayer, this.otherPlayersGroup);
+        this.physics.add.collider(this.myPlayer, this.prisonWallGroup);
+        this.physics.add.collider(this.otherPlayersGroup, this.prisonWallGroup);
 
         this.keyW = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
         this.keyA = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
@@ -149,10 +204,11 @@ export class MainScene extends Phaser.Scene {
         this.key6 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SIX);
         this.key7 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SEVEN);
         this.key8 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.EIGHT);
+        this.key9 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.NINE);
         this.keySpace = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
         this.keyE = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
 
-        db.ref('players/' + this.myId).set({ x: startX, y: startY, nickname: this.myNickname, color: this.myColor, hp: 100, stone: 0, wood: 0, tribeId: null, tribeColor: null, reputation: 0 });
+        db.ref('players/' + this.myId).set({ x: startX, y: startY, nickname: this.myNickname, color: this.myColor, hp: 100, stone: 0, wood: 0, tribeId: null, tribeColor: null, reputation: 0, petType: null, hatType: null });
 
         this.maybeSpawnResources();
         this.time.addEvent({ delay: 15000, loop: true, callback: () => this.maybeSpawnResources() });
@@ -167,6 +223,10 @@ export class MainScene extends Phaser.Scene {
             return null;
         };
         const isOwnerOrCitizenOf = (totem) => totem && (totem.ownerId === this.myId || this.myTribeId === totem.key);
+        const canBuildHere = (gx, gy) => {
+            if (gx >= PRISON_GRID_MIN && gx <= PRISON_GRID_MAX && gy >= PRISON_GRID_MIN && gy <= PRISON_GRID_MAX) return false;
+            return true;
+        };
 
         const canvasEl = this.sys.game.canvas;
         const gameContainer = document.getElementById('game-container');
@@ -186,6 +246,10 @@ export class MainScene extends Phaser.Scene {
 
             const isShift = e.shiftKey || this.shiftKey.isDown;
             if (isShift) {
+                if (this.prisonBlockKeys.has(blockKey) || !canBuildHere(gridX, gridY)) {
+                    this.showToast("감옥 구역에서는 건설/파괴할 수 없습니다.");
+                    return;
+                }
                 const totem = getTotemAt(gridX, gridY);
                 if (totem && !isOwnerOrCitizenOf(totem)) {
                     this.showToast("이 영토에서 건설/파괴할 권한이 없습니다.");
@@ -200,15 +264,49 @@ export class MainScene extends Phaser.Scene {
                 const p = this.players[id];
                 if (p && p.active && Phaser.Math.Distance.Between(x, y, p.x, p.y) < 30) {
                     const pid = id;
+                    /* V14: 진압봉으로 체포 */
+                    if (this.currentMaterial === 'police_baton') {
+                        if (this.myReputation < BATON_REP_REQUIRED) {
+                            this.showToast("권한이 없습니다. (평판 20 이상 필요)");
+                            return;
+                        }
+                        db.ref('players/' + pid).once('value', (snap) => {
+                            const d = snap.val();
+                            if (!d) return;
+                            const targetRep = safeNum(d.reputation);
+                            if (targetRep > ARREST_REP_THRESHOLD) {
+                                this.showToast("일반 시민은 체포할 수 없습니다.");
+                                return;
+                            }
+                            const jailedUntil = Date.now() + JAIL_DURATION_MS;
+                            db.ref('players/' + pid).update({
+                                x: PRISON_CENTER_X, y: PRISON_CENTER_Y,
+                                isJailed: true, jailedUntil
+                            });
+                            this.showToast("체포 완료.");
+                            this.cameras.main.shake(120, 0.008);
+                            const hitFx = this.add.circle(p.x, p.y - 16, 3, 0x1565C0, 0.9);
+                            this.tweens.add({ targets: hitFx, scaleX: 5, scaleY: 5, alpha: 0, duration: 200, onComplete: () => hitFx.destroy() });
+                        });
+                        return;
+                    }
+                    /* 기존 주먹 공격 */
+                    this.cameras.main.shake(120, 0.008);
+                    const hitFx = this.add.circle(p.x, p.y - 16, 3, 0xc0392b, 0.9);
+                    this.tweens.add({ targets: hitFx, scaleX: 4, scaleY: 4, alpha: 0, duration: 150, onComplete: () => hitFx.destroy() });
                     db.ref('players/' + pid).once('value', (snap) => {
                         const d = snap.val();
                         if (!d) return;
                         if (this.myTribeId && d.tribeId === this.myTribeId) return;
-                        const newHp = Math.max(0, safeNum(d.hp, 100) - 20);
+                        const newHp = Math.max(0, safeNum(d.hp, 100) - FIST_PLAYER_DAMAGE);
                         const sx = safeNum(d.x), sy = safeNum(d.y);
                         if (newHp <= 0) {
-                            const rx = Math.floor(Math.random() * 20) * 32 + 16;
-                            const ry = Math.floor(Math.random() * 15) * 32 + 16;
+                            let rx = Math.floor(Math.random() * 20) * 32 + 16, ry = Math.floor(Math.random() * 15) * 32 + 16;
+                            for (let i = 0; i < 10; i++) {
+                                if (!(rx >= PRISON_GRID_MIN && rx <= PRISON_GRID_MAX && ry >= PRISON_GRID_MIN && ry <= PRISON_GRID_MAX)) break;
+                                rx = Math.floor(Math.random() * 20) * 32 + 16;
+                                ry = Math.floor(Math.random() * 15) * 32 + 16;
+                            }
                             const s = Math.floor(safeNum(d.stone) * 0.5);
                             const w = Math.floor(safeNum(d.wood) * 0.5);
                             db.ref('players/' + pid).update({ x: rx, y: ry, hp: 100, stone: Math.max(0, safeNum(d.stone) - s), wood: Math.max(0, safeNum(d.wood) - w) });
@@ -234,7 +332,7 @@ export class MainScene extends Phaser.Scene {
             }
             if (totemAt && tk) {
                 if (this.myTribeId === tk || totemAt.ownerId === this.myId) {
-                    if (confirm("돌 10개로 토템 HP +500 수리하시겠습니까?")) {
+                    if (confirm(`돌 ${TOTEM_REPAIR_COST}개로 토템 HP +${TOTEM_REPAIR_AMOUNT} 수리하시겠습니까?`)) {
                         db.ref('players/' + this.myId).once('value', (snap) => {
                             const p = snap.val();
                             if (!p) return;
@@ -256,7 +354,7 @@ export class MainScene extends Phaser.Scene {
                     } else {
                         db.ref('blocks/' + tk).transaction((cur) => {
                             if (!cur || cur.type !== 'totem') return;
-                            const nhp = Math.max(0, safeNum(cur.hp, 10000) - 20);
+                            const nhp = Math.max(0, safeNum(cur.hp, 10000) - FIST_TOTEM_DAMAGE);
                             if (nhp <= 0) {
                                 db.ref('players').once('value', (s) => {
                                     const pl = s.val() || {};
@@ -329,12 +427,16 @@ export class MainScene extends Phaser.Scene {
                         });
                     }
                 } else if (!existing) {
+                    if (!canBuildHere(gridX, gridY)) {
+                        this.showToast("감옥 구역에서는 건설할 수 없습니다.");
+                        return;
+                    }
                     const totem = getTotemAt(gridX, gridY);
                     if (totem && !isOwnerOrCitizenOf(totem)) {
                         this.showToast("이 영토에서 건설할 권한이 없습니다.");
                         return;
                     }
-                    const costMap = { wall: [1,0,0], sign: [0,1,0], door: [0,1,0], totem: [100,100,0], tnt: [50,50,50], shop: [0,20,0] };
+                    const costMap = { wall: [1,0,0], sign: [0,1,0], door: [0,1,0], totem: [100,100,0], tnt: [TNT_COST_STONE,TNT_COST_WOOD,TNT_COST_HP], shop: [0,20,0] };
                     const c = costMap[this.currentMaterial] || [0,0,0];
                     const cost = { stone: c[0], wood: c[1], hp: c[2] };
                     if (cost.stone > 0 || cost.wood > 0 || cost.hp > 0) {
@@ -367,7 +469,7 @@ export class MainScene extends Phaser.Scene {
                                 this.myTribeId = blockKey; this.myTribeColor = this.myColor;
                             } else if (this.currentMaterial === 'tnt') {
                                 db.ref('blocks/' + blockKey).set({ x: gridX, y: gridY, type: 'tnt', placedAt: Date.now() });
-                                db.ref('players/' + this.myId).update({ stone: s - 50, wood: w - 50, hp: h - 50 });
+                                db.ref('players/' + this.myId).update({ stone: s - cost.stone, wood: w - cost.wood, hp: h - cost.hp });
                             } else if (this.currentMaterial === 'shop') {
                                 db.ref('blocks/' + blockKey).set({ x: gridX, y: gridY, type: 'shop', ownerId: this.myId, stock: { resource: 'wood', amount: 0 }, price: { resource: 'stone', amount: 0 } });
                                 db.ref('players/' + this.myId).update({ wood: w - 20 });
@@ -422,6 +524,25 @@ export class MainScene extends Phaser.Scene {
                             db.ref('server/announcement').set({ message: shoutMsg, author: this.myNickname, timestamp: Date.now() });
                             db.ref('players/' + this.myId).update({ stone: s - SHOUT_COST });
                         });
+                    } else if (msg.startsWith('/pet ') || msg === '/pet') {
+                        const type = (msg.startsWith('/pet ') ? msg.slice(5).trim().toLowerCase() : '');
+                        const valid = ['koala', 'alpaca', 'gecko'];
+                        const val = (valid.includes(type) ? type : (type === 'none' || type === '' ? null : null));
+                        if (type && !valid.includes(type)) { this.showToast("koala, alpaca, gecko 중 선택"); }
+                        else { db.ref('players/' + this.myId).update({ petType: val }); this.showToast(val ? `펫: ${val}` : "펫 해제"); }
+                    } else if (msg.startsWith('/hat ') || msg === '/hat') {
+                        const type = (msg.startsWith('/hat ') ? msg.slice(5).trim().toLowerCase() : '');
+                        const val = (type === 'fedora' ? 'fedora' : (type === 'none' || type === '' ? null : null));
+                        db.ref('players/' + this.myId).update({ hatType: val });
+                        this.showToast(val ? `모자: ${val}` : "모자 해제");
+                    } else if (msg.startsWith('/color ')) {
+                        const hex = msg.slice(7).trim();
+                        const m = hex.match(/^#?([0-9A-Fa-f]{6})$/);
+                        if (m) {
+                            const rgb = parseInt(m[1], 16);
+                            db.ref('players/' + this.myId).update({ color: rgb });
+                            this.showToast("색상 변경됨");
+                        } else this.showToast("형식: /color #FF0000");
                     } else {
                         db.ref('players/' + this.myId).update({ chat: msg, chatTime: firebase.database.ServerValue.TIMESTAMP });
                         const myDisp = (this.myReputation <= -10 ? '😈 ' : '') + this.myNickname;
@@ -468,6 +589,7 @@ export class MainScene extends Phaser.Scene {
                 this.myText.x = this.myPlayer.x;
                 this.myText.y = this.myPlayer.y - 35;
                 this.drawHpBar(this.myHpBar, this.myPlayer.x, this.myPlayer.y - 28, safeNum(this.myHp, 100), 100);
+                if (this.myHatSprite) { this.myHatSprite.x = this.myPlayer.x; this.myHatSprite.y = this.myPlayer.y - 18; }
             }
         });
 
@@ -483,6 +605,9 @@ export class MainScene extends Phaser.Scene {
             if (ui.myStone) ui.myStone.innerText = this.myStone;
             if (ui.myWood) ui.myWood.innerText = this.myWood;
             if (d.x !== undefined && d.y !== undefined) { this.myPlayer.x = d.x; this.myPlayer.y = d.y; }
+            this.myIsJailed = !!(d.isJailed);
+            this.myJailedUntil = safeNum(d.jailedUntil, 0);
+            this.syncMyPetAndHat(safeVal(d.petType), safeVal(d.hatType), d.tribeColor || d.color || this.myColor);
             const rep = safeNum(d.reputation);
             this.myReputation = rep;
             const myDisplayName = (rep <= -10 ? '😈 ' : '') + (d.nickname || this.myNickname);
@@ -495,21 +620,29 @@ export class MainScene extends Phaser.Scene {
         db.ref('players').on('child_changed', (s) => this.handlePlayerUpdate(s, 'change'));
         db.ref('players').on('child_removed', (s) => {
             const id = s.key;
-            if (this.players[id]) { this.players[id].destroy(); delete this.players[id]; }
+            this.destroyPlayerPetAndHat(id);
+            if (this.players[id]) {
+                this.otherPlayersGroup.remove(this.players[id], false, false);
+                this.players[id].destroy();
+                delete this.players[id];
+            }
             if (this.playerTexts[id]) { this.playerTexts[id].destroy(); delete this.playerTexts[id]; }
             if (this.playerHpBars[id]) { this.playerHpBars[id].destroy(); delete this.playerHpBars[id]; }
         });
 
         db.ref('blocks').on('child_added', (s) => this.createBlock(s.key, s.val()));
         db.ref('blocks').on('child_changed', (s) => {
+            const key = s.key;
+            if (this.prisonBlockKeys && this.prisonBlockKeys.has(key)) return; /* V14: 감옥 벽은 DB와 무관 */
             const data = s.val();
             if (!data) return;
-            if (data.type === 'totem') this.totemsData[s.key] = { x: data.x, y: data.y, ownerId: data.ownerId, hp: safeNum(data.hp, 10000), color: data.color || 0xFFD700 };
-            this.removeBlock(s.key);
-            this.createBlock(s.key, data);
+            if (data.type === 'totem') this.totemsData[key] = { x: data.x, y: data.y, ownerId: data.ownerId, hp: safeNum(data.hp, 10000), color: data.color || 0xFFD700 };
+            this.removeBlock(key);
+            this.createBlock(key, data);
         });
         db.ref('blocks').on('child_removed', (s) => {
             const key = s.key;
+            if (this.prisonBlockKeys && this.prisonBlockKeys.has(key)) return; /* V14: 감옥 벽은 DB와 무관 */
             if (this.totemsData[key]) {
                 db.ref('players').once('value', (snap) => {
                     const pl = snap.val() || {};
@@ -523,6 +656,26 @@ export class MainScene extends Phaser.Scene {
         });
 
         db.ref('players/' + this.myId).onDisconnect().remove();
+    }
+
+    syncMyPetAndHat(petType, hatType, displayColor) {
+        if (petType !== this.myPetType) {
+            if (this.myPetSprite) { this.myPetSprite.destroy(); this.myPetSprite = null; }
+            this.myPetType = petType;
+            if (petType && ['koala', 'alpaca', 'gecko'].includes(petType)) {
+                this.myPetSprite = this.add.sprite(this.myPlayer.x, this.myPlayer.y, 'pet_' + petType);
+                this.myPetSprite.setDepth(9); this.myPetSprite.setScale(0.6);
+            }
+        }
+        if (hatType !== this.myHatType) {
+            if (this.myHatSprite) { this.myHatSprite.destroy(); this.myHatSprite = null; }
+            this.myHatType = hatType;
+            if (hatType === 'fedora') {
+                this.myHatSprite = this.add.sprite(this.myPlayer.x, this.myPlayer.y - 18, 'hat_fedora');
+                this.myHatSprite.setDepth(11); this.myHatSprite.setScale(0.7);
+            }
+        }
+        if (this.myHatSprite) { this.myHatSprite.x = this.myPlayer.x; this.myHatSprite.y = this.myPlayer.y - 18; }
     }
 
     showToast(msg) {
@@ -586,8 +739,12 @@ export class MainScene extends Phaser.Scene {
                 if (dist <= TNT_EXPLODE_RADIUS) {
                     const nhp = Math.max(0, safeNum(d.hp, 100) - TNT_PLAYER_DAMAGE);
                     if (nhp <= 0) {
-                        const rx = Math.floor(Math.random() * 20) * 32 + 16;
-                        const ry = Math.floor(Math.random() * 15) * 32 + 16;
+                        let rx = Math.floor(Math.random() * 20) * 32 + 16, ry = Math.floor(Math.random() * 15) * 32 + 16;
+                        for (let i = 0; i < 10; i++) {
+                            if (!(rx >= PRISON_GRID_MIN && rx <= PRISON_GRID_MAX && ry >= PRISON_GRID_MIN && ry <= PRISON_GRID_MAX)) break;
+                            rx = Math.floor(Math.random() * 20) * 32 + 16;
+                            ry = Math.floor(Math.random() * 15) * 32 + 16;
+                        }
                         const s = Math.floor(safeNum(d.stone) * 0.5);
                         const w = Math.floor(safeNum(d.wood) * 0.5);
                         db.ref('players/' + pid).update({ x: rx, y: ry, hp: 100, stone: Math.max(0, safeNum(d.stone) - s), wood: Math.max(0, safeNum(d.wood) - w) });
@@ -628,7 +785,9 @@ export class MainScene extends Phaser.Scene {
     spawnResources(rockNeed, treeNeed) {
         const positions = [];
         for (let gx = 0; gx < 25; gx++) for (let gy = 0; gy < 19; gy++) {
-            positions.push({ x: gx * 32 + 16, y: gy * 32 + 16, key: (gx * 32 + 16) + '_' + (gy * 32 + 16) });
+            const px = gx * 32 + 16, py = gy * 32 + 16;
+            if (px >= PRISON_GRID_MIN && px <= PRISON_GRID_MAX && py >= PRISON_GRID_MIN && py <= PRISON_GRID_MAX) continue; /* V14: 감옥 구역 제외 */
+            positions.push({ x: px, y: py, key: px + '_' + py });
         }
         Phaser.Utils.Array.Shuffle(positions);
         positions.forEach((p, i) => {
@@ -642,6 +801,7 @@ export class MainScene extends Phaser.Scene {
 
     createBlock(key, data) {
         if (!data) return;
+        if (this.prisonBlockKeys && this.prisonBlockKeys.has(key)) return; /* V14: 감옥 벽은 DB에서 덮어쓰지 않음 */
         this.removeBlock(key);
         let block;
         if (data.type === 'wall' || !data.type) {
@@ -706,7 +866,13 @@ export class MainScene extends Phaser.Scene {
         if (this.shopLabels[key]) { this.shopLabels[key].destroy(); delete this.shopLabels[key]; }
         this.doorKeys.delete(key);
         delete this.doorOpenUntil[key];
-        if (this.blocks[key]) { this.blocks[key].destroy(); delete this.blocks[key]; }
+        if (this.blocks[key]) {
+            const block = this.blocks[key];
+            const parent = block.getParent ? block.getParent() : block.parentContainer;
+            if (parent && typeof parent.remove === 'function') parent.remove(block, false, false);
+            block.destroy();
+            delete this.blocks[key];
+        }
     }
 
     handlePlayerUpdate(snapshot, type) {
@@ -715,8 +881,9 @@ export class MainScene extends Phaser.Scene {
         const data = snapshot.val();
         if (!data) return;
         const hp = safeNum(data.hp, 100);
+        const px = safeNum(data.x), py = safeNum(data.y);
         if (!this.players[id]) {
-            this.players[id] = this.physics.add.sprite(safeNum(data.x), safeNum(data.y), 'dude');
+            this.players[id] = this.physics.add.sprite(px, py, 'dude');
             this.players[id].setDepth(10);
             this.players[id].setTint(data.tribeColor || data.color || 0xffffff);
             this.players[id].setCollideWorldBounds(true);
@@ -724,13 +891,14 @@ export class MainScene extends Phaser.Scene {
             this.players[id].body.setSize(28, 32);
             this.players[id].body.setOffset(2, 0);
             this.otherPlayersGroup.add(this.players[id]);
-            this.playerTexts[id] = this.add.text(data.x, data.y - 35, data.nickname || "익명", { fontSize: '12px', fill: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5);
+            this.playerTexts[id] = this.add.text(px, py - 35, data.nickname || "익명", { fontSize: '12px', fill: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5);
             this.playerHpBars[id] = this.add.graphics();
+            this.playerPetData[id] = { petSprite: null, hatSprite: null, petType: null, hatType: null, petX: px, petY: py };
         }
-        this.players[id].x = safeNum(data.x);
-        this.players[id].y = safeNum(data.y);
-        this.playerTexts[id].x = safeNum(data.x);
-        this.playerTexts[id].y = safeNum(data.y) - 35;
+        this.players[id].x = px;
+        this.players[id].y = py;
+        this.playerTexts[id].x = px;
+        this.playerTexts[id].y = py - 35;
         if (hp <= 0) {
             this.players[id].setTexture('skull');
             this.players[id].clearTint();
@@ -738,7 +906,31 @@ export class MainScene extends Phaser.Scene {
             this.players[id].setTexture('dude');
             this.players[id].setTint(data.tribeColor || data.color || 0xffffff);
         }
-        this.drawHpBar(this.playerHpBars[id], safeNum(data.x), safeNum(data.y) - 28, hp, 100);
+        /* V15: 펫 & 모자 동기화 */
+        const petType = safeVal(data.petType);
+        const hatType = safeVal(data.hatType);
+        const pd = this.playerPetData[id];
+        if (pd) {
+            if (petType !== pd.petType) {
+                if (pd.petSprite) { pd.petSprite.destroy(); pd.petSprite = null; }
+                pd.petType = petType;
+                if (petType && ['koala', 'alpaca', 'gecko'].includes(petType)) {
+                    pd.petSprite = this.add.sprite(px, py, 'pet_' + petType);
+                    pd.petSprite.setDepth(9); pd.petSprite.setScale(0.6);
+                    pd.petX = px; pd.petY = py;
+                }
+            }
+            if (hatType !== pd.hatType) {
+                if (pd.hatSprite) { pd.hatSprite.destroy(); pd.hatSprite = null; }
+                pd.hatType = hatType;
+                if (hatType === 'fedora') {
+                    pd.hatSprite = this.add.sprite(px, py - 18, 'hat_fedora');
+                    pd.hatSprite.setDepth(11); pd.hatSprite.setScale(0.7);
+                }
+            }
+            if (pd.hatSprite) { pd.hatSprite.x = px; pd.hatSprite.y = py - 18; }
+        }
+        this.drawHpBar(this.playerHpBars[id], px, py - 28, hp, 100);
         const rep = safeNum(data.reputation);
         const displayName = (rep <= -10 ? '😈 ' : '') + (data.nickname || "익명");
         this.playerTexts[id].setText(displayName);
@@ -747,6 +939,15 @@ export class MainScene extends Phaser.Scene {
         else this.playerTexts[id].setStyle({ fill: '#fff', backgroundColor: '#00000088' });
         const fillColor = rep >= 10 ? '#FFD700' : rep <= -10 ? '#FF0000' : '#fff';
         if (data.chat && (type === 'change' || type === 'add')) this.showChatBubble(this.playerTexts[id], data.chat, displayName, fillColor);
+    }
+
+    destroyPlayerPetAndHat(id) {
+        const pd = this.playerPetData[id];
+        if (pd) {
+            if (pd.petSprite) { pd.petSprite.destroy(); pd.petSprite = null; }
+            if (pd.hatSprite) { pd.hatSprite.destroy(); pd.hatSprite = null; }
+            delete this.playerPetData[id];
+        }
     }
 
     drawHpBar(g, x, y, hp, maxHp) {
@@ -763,11 +964,20 @@ export class MainScene extends Phaser.Scene {
     showChatBubble(textObj, msg, originalName, restoreFill = '#fff') {
         if (!textObj) return;
         textObj.setText(msg);
-        textObj.setStyle({ backgroundColor: '#ffffff', fill: '#000' });
+        textObj.setStyle({ backgroundColor: '#1a1a1d', fill: '#e8e8e8', fontStyle: 'italic' });
+        textObj.setAlpha(0);
+        textObj.setScale(0.85);
+        this.tweens.add({
+            targets: textObj,
+            alpha: 1,
+            scale: 1,
+            duration: 200,
+            ease: 'Back.easeOut'
+        });
         setTimeout(() => {
             if (textObj && textObj.scene) {
                 textObj.setText(originalName);
-                textObj.setStyle({ backgroundColor: '#00000088', fill: restoreFill });
+                textObj.setStyle({ backgroundColor: '#00000088', fill: restoreFill, fontStyle: 'normal' });
             }
         }, 3000);
     }
@@ -938,8 +1148,24 @@ export class MainScene extends Phaser.Scene {
             if (Phaser.Input.Keyboard.JustDown(this.key4)) { this.currentMaterial = 'sign'; ui.materialIndicator.innerText = "현재 재료: 🪧 표지판 (4)"; }
             if (Phaser.Input.Keyboard.JustDown(this.key5)) { this.currentMaterial = 'door'; ui.materialIndicator.innerText = "현재 재료: 🚪 문 (5)"; }
             if (Phaser.Input.Keyboard.JustDown(this.key6)) { this.currentMaterial = 'totem'; ui.materialIndicator.innerText = "현재 재료: 🏛 토템 (6, 돌100+나무100)"; }
-            if (Phaser.Input.Keyboard.JustDown(this.key7)) { this.currentMaterial = 'tnt'; ui.materialIndicator.innerText = "현재 재료: 💣 TNT (7, 돌50+나무50+HP50)"; }
+            if (Phaser.Input.Keyboard.JustDown(this.key7)) { this.currentMaterial = 'tnt'; ui.materialIndicator.innerText = `현재 재료: 💣 TNT (7, 돌${TNT_COST_STONE}+나무${TNT_COST_WOOD}+HP${TNT_COST_HP})`; }
             if (Phaser.Input.Keyboard.JustDown(this.key8)) { this.currentMaterial = 'shop'; ui.materialIndicator.innerText = "현재 재료: 🏪 상점 (8, 나무 20개)"; }
+            if (Phaser.Input.Keyboard.JustDown(this.key9)) {
+                if (this.myReputation >= BATON_REP_REQUIRED) {
+                    this.currentMaterial = 'police_baton';
+                    ui.materialIndicator.innerText = "현재 도구: 🛡 진압봉 (9, 체포 모드)";
+                } else {
+                    this.showToast("권한이 없습니다. (평판 20 이상 필요)");
+                }
+            }
+        }
+
+        /* V14: 감옥 시간 만료 시 해제 */
+        if (this.myIsJailed && this.myJailedUntil > 0 && Date.now() >= this.myJailedUntil) {
+            this.myIsJailed = false;
+            this.myJailedUntil = 0;
+            db.ref('players/' + this.myId).update({ isJailed: false, jailedUntil: 0 });
+            this.showToast("감옥에서 풀려났습니다.");
         }
 
         const pointer = this.input.activePointer;
@@ -951,11 +1177,40 @@ export class MainScene extends Phaser.Scene {
 
         const speed = 160;
         this.myPlayer.setVelocity(0);
-        if (document.activeElement !== (ui.chatInput || null)) {
+        const isJailedNow = this.myIsJailed && this.myJailedUntil > 0 && Date.now() < this.myJailedUntil;
+        if (!isJailedNow && document.activeElement !== (ui.chatInput || null)) {
             if (this.keyA.isDown) { this.myPlayer.setVelocityX(-speed); this.lastDir.x = -1; this.lastDir.y = 0; }
             else if (this.keyD.isDown) { this.myPlayer.setVelocityX(speed); this.lastDir.x = 1; this.lastDir.y = 0; }
             if (this.keyW.isDown) { this.myPlayer.setVelocityY(-speed); this.lastDir.x = 0; this.lastDir.y = -1; }
             else if (this.keyS.isDown) { this.myPlayer.setVelocityY(speed); this.lastDir.x = 0; this.lastDir.y = 1; }
+        }
+
+        /* V15: 펫 추적 (Lerp, 40px 유지) */
+        if (this.myPetSprite) {
+            const ox = this.myPlayer.x, oy = this.myPlayer.y;
+            let tx = this.myPetSprite.x, ty = this.myPetSprite.y;
+            const dx = tx - ox, dy = ty - oy;
+            let dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+            if (dist > 0.001) {
+                const targetDist = PET_FOLLOW_DIST;
+                const tx2 = ox + (dx / dist) * targetDist, ty2 = oy + (dy / dist) * targetDist;
+                this.myPetSprite.x = Phaser.Math.Linear(tx, tx2, PET_FOLLOW_LERP);
+                this.myPetSprite.y = Phaser.Math.Linear(ty, ty2, PET_FOLLOW_LERP);
+            } else { this.myPetSprite.x = ox + 20; this.myPetSprite.y = oy + 20; }
+        }
+        for (const id in this.playerPetData) {
+            const pd = this.playerPetData[id];
+            const owner = this.players[id];
+            if (!pd || !pd.petSprite || !owner) continue;
+            const ox = owner.x, oy = owner.y;
+            let tx = pd.petSprite.x, ty = pd.petSprite.y;
+            const dx = tx - ox, dy = ty - oy;
+            let dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+            if (dist > 0.001) {
+                const tx2 = ox + (dx / dist) * PET_FOLLOW_DIST, ty2 = oy + (dy / dist) * PET_FOLLOW_DIST;
+                pd.petSprite.x = Phaser.Math.Linear(tx, tx2, PET_FOLLOW_LERP);
+                pd.petSprite.y = Phaser.Math.Linear(ty, ty2, PET_FOLLOW_LERP);
+            } else { pd.petSprite.x = ox + 20; pd.petSprite.y = oy + 20; }
         }
 
         if (Phaser.Input.Keyboard.JustDown(this.keySpace) && (this.lastDir.x !== 0 || this.lastDir.y !== 0)) {
