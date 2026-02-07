@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Flexible-World: Civilization</title>
+    <style>
+        body { 
+            margin: 0; background-color: #111; color: #fff; 
+            display: flex; justify-content: center; align-items: center; 
+            height: 100vh; overflow: hidden; font-family: 'Courier New', monospace;
+            user-select: none;
+        }
+        
+        /* UI 레이어 */
+        #ui-layer { position: absolute; top: 10px; left: 10px; pointer-events: none; z-index: 10; text-align: left; }
+        h2 { margin: 0; text-shadow: 2px 2px 0 #000; font-size: 20px; }
+        p { margin: 2px 0; font-size: 14px; color: #ccc; text-shadow: 1px 1px 0 #000; }
+        
+        /* 현재 선택된 재료 표시 */
+        #material-indicator {
+            margin-top: 10px; padding: 10px; background: rgba(0,0,0,0.6); 
+            border: 2px solid #fff; display: inline-block;
+        }
+
+        /* 채팅창 */
+        #chat-container { position: absolute; bottom: 20px; width: 100%; text-align: center; pointer-events: none; z-index: 10; }
+        #chat-input { 
+            pointer-events: auto; background: rgba(0,0,0,0.7); border: 1px solid #555; color: white; 
+            padding: 10px; width: 300px; border-radius: 20px; outline: none; text-align: center;
+        }
+        
+        /* [V4] 로그인 화면 스타일 */
+        #login-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: #000; z-index: 100;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+        }
+        #login-box {
+            background: #222; padding: 40px; border: 2px solid #555; text-align: center; border-radius: 10px;
+        }
+        #nickname-input {
+            padding: 10px; font-size: 16px; width: 200px; text-align: center;
+            background: #333; border: 1px solid #666; color: white; margin-bottom: 20px;
+        }
+        #start-btn {
+            padding: 10px 30px; font-size: 18px; cursor: pointer;
+            background: #4CAF50; color: white; border: none; border-radius: 5px;
+        }
+        #start-btn:hover { background: #45a049; }
+
+        canvas { border: 1px solid #444; box-shadow: 0 0 40px rgba(0,0,0,0.5); }
+    </style>
+    
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-database-compat.js"></script>
+    <script src="firebaseConfig.js"></script>
+</head>
+<body>
+
+    <div id="login-screen">
+        <div id="login-box">
+            <h1>FLEXIBLE-WORLD</h1>
+            <p>당신의 이름을 알려주세요</p>
+            <input type="text" id="nickname-input" placeholder="닉네임 (최대 6글자)" maxlength="6">
+            <br>
+            <button id="start-btn">세상에 던져지기 (Enter)</button>
+        </div>
+    </div>
+
+    <div id="ui-layer">
+        <h2>BUILDER MODE</h2>
+        <div id="material-indicator">현재 재료: 🔲 돌벽 (1)</div>
+        <p>1,2,3: 재료 변경 | 클릭: 건설 | Shift+클릭: 파괴</p>
+        <div id="status" style="color: yellow;">대기 중...</div>
+    </div>
+
+    <div id="game-container"></div>
+
+    <div id="chat-container">
+        <input type="text" id="chat-input" placeholder="대화 입력 (Enter)" maxlength="30">
+    </div>
+
+    <script>
+        // 0. 안전장치
+        if (typeof firebaseConfig === 'undefined') {
+            alert("설정 파일 오류! firebaseConfig.js를 확인하세요."); throw new Error("Config missing");
+        }
+
+        // 1. 파이어베이스 & 전역 변수
+        try { firebase.initializeApp(firebaseConfig); } catch(e) { console.error(e); }
+        const db = firebase.database();
+        
+        let myId;
+        let myNickname = "익명";
+        let myColor;
+        
+        // 게임 상태 변수
+        let currentMaterial = 'wall'; // 기본 재료
+        let isGameStarted = false;
+
+        // Phaser 변수
+        let game;
+        let myPlayer;
+        let cursors;
+        let shiftKey;
+        let key1, key2, key3; // 재료 변경 키
+        
+        let players = {};
+        let playerTexts = {};
+        let blocks = {};
+        let marker;
+        
+        // 그룹 (레이어 관리용)
+        let floorGroup; // 바닥 (밟을 수 있음)
+        let wallGroup;  // 벽 (못 지나감)
+
+        // ==========================================
+        // [V4] 로그인 로직
+        // ==========================================
+        const loginScreen = document.getElementById('login-screen');
+        const nickInput = document.getElementById('nickname-input');
+        const startBtn = document.getElementById('start-btn');
+
+        function startGame() {
+            const name = nickInput.value.trim();
+            if (name === "") { alert("이름을 입력해주세요!"); return; }
+            
+            myNickname = name;
+            myId = 'user_' + Math.floor(Math.random() * 1000000);
+            // 랜덤 색상 생성 (너무 어두운 색 제외)
+            myColor = Phaser.Display.Color.RandomRGB(50, 255).color; 
+
+            loginScreen.style.display = 'none'; // 로그인창 숨김
+            isGameStarted = true;
+            
+            // 게임 시작
+            game = new Phaser.Game(config);
+        }
+
+        startBtn.addEventListener('click', startGame);
+        nickInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
+
+
+        // ==========================================
+        // Phaser 게임 설정
+        // ==========================================
+        const config = {
+            type: Phaser.AUTO,
+            width: 800,
+            height: 600,
+            parent: 'game-container',
+            backgroundColor: '#2d2d2d',
+            physics: { default: 'arcade', arcade: { debug: false } },
+            disableContextMenu: true,
+            scene: { preload: preload, create: create, update: update }
+        };
+
+        function preload() {
+            this.load.image('dude', 'https://labs.phaser.io/assets/sprites/phaser-dude.png');
+            
+            // [V5] 텍스처 즉석 생성 (이미지 파일 없이 코드로 만듦)
+            // 1. 돌벽 (회색)
+            let g = this.make.graphics({x:0, y:0});
+            g.fillStyle(0x888888); g.fillRect(0,0,32,32);
+            g.lineStyle(2, 0x555555); g.strokeRect(0,0,32,32); // 테두리
+            g.generateTexture('wall', 32, 32);
+
+            // 2. 잔디 (초록)
+            g.clear();
+            g.fillStyle(0x4CAF50); g.fillRect(0,0,32,32);
+            g.fillStyle(0x388E3C); g.fillCircle(10,10,2); g.fillCircle(25,25,3); // 무늬
+            g.generateTexture('grass', 32, 32);
+
+            // 3. 물 (파랑)
+            g.clear();
+            g.fillStyle(0x2196F3); g.fillRect(0,0,32,32);
+            g.generateTexture('water', 32, 32);
+        }
+
+        function create() {
+            const self = this;
+            
+            // 연결 상태 표시
+            db.ref(".info/connected").on("value", (snap) => {
+                const status = document.getElementById('status');
+                if (snap.val()) { status.innerText = "연결됨"; status.style.color = "#00ff00"; }
+                else { status.innerText = "끊김"; status.style.color = "red"; }
+            });
+
+            this.input.mouse.disableContextMenu();
+
+            // [레이어 순서 중요] 바닥 -> 벽 -> 플레이어
+            floorGroup = this.add.group();      // 물리 적용 X (그냥 그림)
+            wallGroup = this.physics.add.staticGroup(); // 물리 적용 O (충돌)
+
+            // 나 자신 생성
+            const startX = Math.floor(Math.random() * 20) * 32 + 16;
+            const startY = Math.floor(Math.random() * 15) * 32 + 16;
+            myPlayer = this.physics.add.sprite(startX, startY, 'dude');
+            myPlayer.setTint(myColor); // [V4] 내 색상 적용
+            myPlayer.setCollideWorldBounds(true);
+            
+            // 내 닉네임 표시
+            this.myText = this.add.text(startX, startY - 25, myNickname, {
+                fontSize: '12px', fill: '#fff', backgroundColor: '#00000088', padding: {x:4, y:2}
+            }).setOrigin(0.5);
+
+            // 충돌 설정 (플레이어는 벽하고만 부딪힘)
+            this.physics.add.collider(myPlayer, wallGroup);
+
+            // 마우스 커서
+            marker = this.add.graphics();
+            marker.lineStyle(2, 0xffffff, 1);
+            marker.strokeRect(0, 0, 32, 32);
+
+            // 키보드 입력
+            cursors = this.input.keyboard.createCursorKeys();
+            shiftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+            
+            // [V5] 재료 변경 키
+            key1 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ONE);
+            key2 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.TWO);
+            key3 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.THREE);
+
+            // 내 정보 DB 등록 (색상, 닉네임 포함)
+            db.ref('players/' + myId).set({
+                x: startX, y: startY,
+                nickname: myNickname,
+                color: myColor
+            });
+
+            // ==========================================
+            // 건설 시스템 (재료 반영)
+            // ==========================================
+            this.input.on('pointerdown', (pointer) => {
+                if (pointer.event.target.id === 'chat-input') return;
+
+                const gridX = Math.floor(pointer.worldX / 32) * 32 + 16;
+                const gridY = Math.floor(pointer.worldY / 32) * 32 + 16;
+                const blockKey = `${gridX}_${gridY}`;
+
+                if (pointer.event.shiftKey) {
+                    db.ref('blocks/' + blockKey).remove(); // 파괴
+                } else {
+                    // [V5] 현재 선택된 재료타입(currentMaterial)을 함께 저장
+                    db.ref('blocks/' + blockKey).set({ 
+                        x: gridX, y: gridY, 
+                        type: currentMaterial 
+                    });
+                }
+            });
+
+            // 채팅 입력
+            const chatInput = document.getElementById('chat-input');
+            chatInput.addEventListener('keydown', (e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter' && chatInput.value.trim() !== "") {
+                    const msg = chatInput.value;
+                    chatInput.value = "";
+                    db.ref('players/' + myId).update({ chat: msg, chatTime: firebase.database.ServerValue.TIMESTAMP });
+                    showChatBubble(self.myText, msg, myNickname);
+                    game.canvas.focus();
+                }
+            });
+
+            // ================= 데이터 동기화 =================
+
+            // 1. 내 위치
+            this.time.addEvent({
+                delay: 50, loop: true,
+                callback: () => {
+                    if (myPlayer.body.velocity.x !== 0 || myPlayer.body.velocity.y !== 0) {
+                        db.ref('players/' + myId).update({ x: myPlayer.x, y: myPlayer.y });
+                    }
+                    self.myText.x = myPlayer.x;
+                    self.myText.y = myPlayer.y - 25;
+                }
+            });
+
+            // 2. 다른 플레이어
+            db.ref('players').on('child_added', (snapshot) => handlePlayerUpdate(snapshot, self, 'add'));
+            db.ref('players').on('child_changed', (snapshot) => handlePlayerUpdate(snapshot, self, 'change'));
+            db.ref('players').on('child_removed', (snapshot) => {
+                const id = snapshot.key;
+                if (players[id]) players[id].destroy();
+                if (playerTexts[id]) playerTexts[id].destroy();
+            });
+
+            // 3. [V5] 블록 동기화 (재료 타입에 따라 다르게 그리기)
+            db.ref('blocks').on('child_added', (snapshot) => {
+                createBlock(self, snapshot.key, snapshot.val());
+            });
+            db.ref('blocks').on('child_changed', (snapshot) => {
+                // 타입이 바뀌었을 수 있으므로 지우고 다시 생성
+                removeBlock(snapshot.key);
+                createBlock(self, snapshot.key, snapshot.val());
+            });
+            db.ref('blocks').on('child_removed', (snapshot) => {
+                removeBlock(snapshot.key);
+            });
+
+            db.ref('players/' + myId).onDisconnect().remove();
+        }
+
+        function update() {
+            if (!myPlayer) return;
+
+            // [V5] 재료 변경 감지
+            const uiText = document.getElementById('material-indicator');
+            if (Phaser.Input.Keyboard.JustDown(key1)) { currentMaterial = 'wall'; uiText.innerText = "현재 재료: 🔲 돌벽 (1)"; }
+            if (Phaser.Input.Keyboard.JustDown(key2)) { currentMaterial = 'grass'; uiText.innerText = "현재 재료: 🌿 잔디 (2)"; }
+            if (Phaser.Input.Keyboard.JustDown(key3)) { currentMaterial = 'water'; uiText.innerText = "현재 재료: 💧 물 (3)"; }
+
+            // 커서 업데이트
+            const pointer = this.input.activePointer;
+            marker.x = Math.floor(pointer.worldX / 32) * 32;
+            marker.y = Math.floor(pointer.worldY / 32) * 32;
+
+            if (shiftKey.isDown) marker.lineStyle(2, 0xff0000, 1);
+            else marker.lineStyle(2, 0xffffff, 1);
+
+            // 이동
+            const speed = 160;
+            myPlayer.setVelocity(0);
+            if (document.activeElement !== document.getElementById('chat-input')) {
+                if (cursors.left.isDown) myPlayer.setVelocityX(-speed);
+                else if (cursors.right.isDown) myPlayer.setVelocityX(speed);
+                if (cursors.up.isDown) myPlayer.setVelocityY(-speed);
+                else if (cursors.down.isDown) myPlayer.setVelocityY(speed);
+            }
+        }
+
+        // ================= 보조 함수들 =================
+
+        function createBlock(scene, key, data) {
+            // 이미 있으면 삭제 (중복 방지)
+            removeBlock(key);
+
+            let block;
+            if (data.type === 'wall' || !data.type) { // 기본값은 wall
+                block = wallGroup.create(data.x, data.y, 'wall');
+                block.refreshBody(); // 충돌체 갱신
+            } else if (data.type === 'grass') {
+                block = floorGroup.create(data.x, data.y, 'grass');
+            } else if (data.type === 'water') {
+                block = floorGroup.create(data.x, data.y, 'water');
+            }
+            blocks[key] = block;
+        }
+
+        function removeBlock(key) {
+            if (blocks[key]) {
+                blocks[key].destroy();
+                delete blocks[key];
+            }
+        }
+
+        function handlePlayerUpdate(snapshot, scene, type) {
+            const id = snapshot.key;
+            if (id === myId) return;
+            const data = snapshot.val();
+            
+            if (!players[id]) {
+                // [V4] 접속 시 타인의 닉네임과 색상 반영
+                players[id] = scene.add.sprite(data.x, data.y, 'dude');
+                players[id].setTint(data.color || 0xffffff); // 색상 없으면 흰색
+                
+                playerTexts[id] = scene.add.text(data.x, data.y - 25, data.nickname || "익명", { 
+                    fontSize: '12px', fill: '#fff', backgroundColor: '#00000088' 
+                }).setOrigin(0.5);
+            } else {
+                players[id].x = data.x;
+                players[id].y = data.y;
+                playerTexts[id].x = data.x;
+                playerTexts[id].y = data.y - 25;
+            }
+            if (data.chat && (type === 'change' || type === 'add')) {
+                showChatBubble(playerTexts[id], data.chat, data.nickname);
+            }
+        }
+
+        function showChatBubble(textObj, msg, originalName) {
+            if (!textObj) return;
+            textObj.setText(msg);
+            textObj.setStyle({ backgroundColor: '#ffffff', fill: '#000' });
+            setTimeout(() => {
+                if (textObj && textObj.scene) {
+                    textObj.setText(originalName); // 원래 이름으로 복귀
+                    textObj.setStyle({ backgroundColor: '#00000088', fill: '#fff' });
+                }
+            }, 3000);
+        }
+    </script>
+</body>
+</html>

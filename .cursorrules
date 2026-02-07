@@ -1,0 +1,26 @@
+# Project Name: Flexible-World (The World of Thrownness)
+# Vision: A digital existentialist society where "Existence precedes Essence".
+
+## 1. Core Philosophy & Developer Role
+- **Role of Developer (Deistic God):** You DO NOT create social rules, laws, or punishments. You ONLY create "Physics" and "Tools".
+- **The Absolute Principle:** "Prove Yourself." Users define who they are through actions, not preset classes.
+- **Responsibility without Enforcement:** Do not code "Ban" buttons or "Safe Zones". Code "Push mechanics", "Health points", and "Buildable walls". Users must protect themselves.
+- **Flexible Identity:** The world connects 2D Pixel, 3D FPS, and Open World genres (Future Roadmap). Currently focusing on the 2D Web MVP.
+
+## 2. Technical Constraints (MVP Phase)
+- **Frontend:** HTML5, CSS3, JavaScript (Vanilla or Minimal framework).
+- **Game Engine:** Phaser 3 (CDN loaded).
+- **Backend:** Firebase (Realtime Database) for state sync. No complex backend logic.
+- **Hosting:** Vercel / GitHub Pages compatible.
+- **Performance:** Optimized for Web Browser. Minimal assets, clean code.
+
+## 3. Coding Guidelines ("The Laws of Physics")
+- **Action > Status:** Do not store "User Class" (e.g., Warrior). Store "User Inventory" (e.g., Holding a Sword).
+- **Interaction:** Use simple object-oriented patterns. Everything is an object with physical properties (collision, mass, health).
+- **Network Efficiency:** Sync only X/Y coordinates and essential state changes (chat, construction) to save Firebase costs.
+- **Modular Design:** Code must be modular to allow future expansion into other genres (Web portals).
+
+## 4. Feature Implementation Rules
+- If asked for a "Prison System", DO NOT code a jail command. Code "Unbreakable Blocks" and let users build the jail.
+- If asked for "Moderation", DO NOT code an admin panel. Code "Social Reputation" UI where users rate each other.
+- **Start Sequence:** Always start with "Thrownness" (Black screen -> Random spawn -> No tutorial).
