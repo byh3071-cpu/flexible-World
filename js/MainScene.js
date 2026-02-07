@@ -17,6 +17,9 @@ const TOTEM_REPAIR_COST = 12;       /* 10→12: 토템 수리 비용 상승 */
 const TOTEM_REPAIR_AMOUNT = 500;
 const FIST_PLAYER_DAMAGE = 25;      /* 20→25: 5회→4회 사망, 긴장감 상승 (V8) */
 const FIST_TOTEM_DAMAGE = 25;       /* 토템 주먹 데미지 */
+/* 월드 크기 — 우측 이동 제한 해제 */
+const WORLD_WIDTH = 2400;
+const WORLD_HEIGHT = 600;
 /* V14: 사법 시스템 */
 const PRISON_CENTER_X = 64, PRISON_CENTER_Y = 64;
 const PRISON_GRID_MIN = -16, PRISON_GRID_MAX = 176;  /* 5x5 내부 + 벽 둘러쌈 */
@@ -26,9 +29,35 @@ const BATON_REP_REQUIRED = 20;      /* 진압봉 사용 최소 평판 */
 /* V15: 펫 & 커스터마이징 */
 const PET_FOLLOW_LERP = 0.08;       /* 펫 추적 부드러움 */
 const PET_FOLLOW_DIST = 40;         /* 주인과 유지 거리 */
+/* V18: 환경·날씨 시스템 — 월드 내부 기준 */
+const BIOME_SNOW_Y = 80;            /* y < 이 값: 설원 (화면 상단) */
+const BIOME_DESERT_X = WORLD_WIDTH - 80;  /* x > 이 값: 사막 (우측 끝) */
+const SNOW_HP_PER_SEC = 1;
+const DESERT_SPEED_MULT = 0.5;
+const WEATHER_INTERVAL_MS = 180000; /* 3분 */
+const ACID_RAIN_DAMAGE = 5;         /* 산성비 초당 데미지 */
+const ACID_RAIN_BLOCK_DAMAGE = 2;   /* 건물 초당 데미지 */
+const CRYSTAL_TARGET = 8;           /* 설원·사막 각 구역당 수 */
+const CRYSTAL_REMAINING = 3;
+/* V17: 오프라인 시간 시뮬레이션 */
+const OFFLINE_RATE = 0.1;           /* 오프라인 시 감소 속도 10% */
+const OFFLINE_24H_SEC = 86400;      /* 24시간 (초) */
+const PET_HUNGER_PER_SEC = 1 / 600; /* 배고픔 1당 600초 (10분) */
+const TOTEM_ENTROPY_PER_SEC = 10000 / 8640; /* 24h 오프라인 시 토템 파괴 (8640 = 24h * 0.1) */
+const PET_HUNGER_MAX = 100;         /* 100 도달 시 펫 도망 */
 
 const safeVal = (v, def = null) => (v != null ? v : def);
 const safeNum = (v, def = 0) => (typeof v === 'number' && !isNaN(v) ? v : def);
+
+/** V17: 초 단위를 "N시간 M분" 형식으로 변환 */
+function formatOfflineTime(seconds) {
+    if (seconds < 60) return `${Math.floor(seconds)}초`;
+    const mins = Math.floor(seconds / 60);
+    if (mins < 60) return `${mins}분`;
+    const hours = Math.floor(mins / 60);
+    const remainMins = mins % 60;
+    return remainMins > 0 ? `${hours}시간 ${remainMins}분` : `${hours}시간`;
+}
 
 export class MainScene extends Phaser.Scene {
     constructor() {
@@ -38,7 +67,11 @@ export class MainScene extends Phaser.Scene {
     init() {
         const data = getStartData();
         if (!data) throw new Error('startData not set');
-        this.myId = data.myId;
+        const uid = data.myId;
+        if (!uid || typeof uid !== 'string') {
+            throw new Error('myId (auth.uid)가 유효하지 않습니다. Anonymous Auth가 완료된 후 게임을 시작해주세요.');
+        }
+        this.myId = uid;
         this.myNickname = data.myNickname;
         this.myColor = data.myColor;
         this.currentMaterial = 'wall';
@@ -54,6 +87,7 @@ export class MainScene extends Phaser.Scene {
         this.myHp = 100;
         this.myStone = 0;
         this.myWood = 0;
+        this.myCrystal = 0;
         this.gatherProgress = {};
         this.totemsData = {};
         this.myTribeId = null;
@@ -73,7 +107,18 @@ export class MainScene extends Phaser.Scene {
         this.myHatSprite = null;
         this.myPetType = null;
         this.myHatType = null;
+        this.myPetHunger = 0;       /* V17: 0(만땅) ~ 100(도망) */
         this.playerPetData = {};    /* id -> { petSprite, petX, petY, petType, hatSprite, hatType } */
+        /* V16: 이모티콘 시스템 */
+        this.playerEmoticonTexts = {};
+        this.myEmoticonText = null;
+        this.playerLastEmoticonTime = {};
+        this.EMOTICON_DURATION = 3000;
+        /* V18: 환경·날씨 */
+        this.weather = 'clear';      /* clear | rain | acid_rain */
+        this.weatherEmitter = null;
+        this.weatherParticles = null;
+        this.acidRainDamageAccum = 0;
     }
 
     getUICache() {
@@ -83,6 +128,7 @@ export class MainScene extends Phaser.Scene {
                 chatInput: document.getElementById('chat-input'),
                 myStone: document.getElementById('my-stone'),
                 myWood: document.getElementById('my-wood'),
+                myCrystal: document.getElementById('my-crystal'),
                 status: document.getElementById('status')
             };
         }
@@ -113,11 +159,25 @@ export class MainScene extends Phaser.Scene {
         g.clear(); g.fillStyle(0xFAFAFA); g.fillEllipse(16, 20, 12, 10); g.fillStyle(0xEEEEEE); g.fillEllipse(16, 8, 6, 14); g.fillStyle(0xF5F5F5); g.fillCircle(16, 2, 4); g.fillStyle(0x9E9E9E); g.fillCircle(14, 4, 1); g.fillCircle(18, 4, 1); g.generateTexture('pet_alpaca', 32, 32);
         g.clear(); g.fillStyle(0x4CAF50); g.fillEllipse(16, 16, 14, 8); g.fillStyle(0x388E3C); g.fillCircle(8, 14, 3); g.fillCircle(24, 14, 3); g.fillStyle(0x2E7D32); g.fillRect(14, 20, 4, 4); g.generateTexture('pet_gecko', 32, 32);
         g.clear(); g.fillStyle(0x212121); g.fillEllipse(16, 12, 14, 6); g.fillStyle(0x1a1a1a); g.fillRect(4, 8, 24, 8); g.fillStyle(0x37474F); g.fillRect(6, 14, 20, 2); g.lineStyle(2, 0x0D0D0D); g.strokeEllipse(16, 12, 14, 6); g.generateTexture('hat_fedora', 32, 32);
+        /* V18: 희귀 광물 (Crystal) — 돌 텍스처 색상 변경 */
+        g.clear(); g.fillStyle(0x7B1FA2); g.fillCircle(16, 18, 12); g.fillStyle(0x9C27B0); g.fillCircle(12, 16, 4); g.fillCircle(20, 18, 3); g.lineStyle(2, 0x4A148C); g.strokeCircle(16, 18, 12); g.generateTexture('crystal', 32, 32);
+        /* 파티클용 픽셀 */
+        g.clear(); g.fillStyle(0xffffff); g.fillRect(0, 0, 2, 2); g.generateTexture('pixel', 2, 2);
     }
 
     create() {
-        this.cameras.main.setBackgroundColor('#0a0a0b');
+        /* 물리·카메라 — 넓은 월드 + 플레이어 팔로우 */
+        this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+        this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+        this.cameras.main.setScroll(0, 0);
+        this.cameras.main.setBackgroundColor('#0c0a0e');
         this.cameras.main.alpha = 0;
+        /* 배경 분위기 — 버려진 세상의 은은한 저녁 */
+        const bg = this.add.graphics();
+        bg.fillGradientStyle(0x0d0c12, 0x0d0c12, 0x0c0a0e, 0x0c0a0e, 0.5);
+        bg.fillRect(-50, -50, 900, 700);
+        bg.setScrollFactor(0);
+        bg.setDepth(-100);
         this.tweens.add({ targets: this.cameras.main, alpha: 1, duration: 1400, ease: 'Power2' });
         const ui = this.getUICache();
         db.ref(".info/connected").on("value", (snap) => {
@@ -157,9 +217,11 @@ export class MainScene extends Phaser.Scene {
         }
 
         let startX, startY;
+        const spawnTilesX = Math.floor(WORLD_WIDTH / 32);
+        const spawnTilesY = Math.floor(WORLD_HEIGHT / 32);
         do {
-            startX = Math.floor(Math.random() * 20) * 32 + 16;
-            startY = Math.floor(Math.random() * 15) * 32 + 16;
+            startX = Math.floor(Math.random() * spawnTilesX) * 32 + 16;
+            startY = Math.floor(Math.random() * spawnTilesY) * 32 + 16;
         } while (startX >= PRISON_GRID_MIN && startX <= PRISON_GRID_MAX && startY >= PRISON_GRID_MIN && startY <= PRISON_GRID_MAX); /* V14: 감옥에서 스폰 방지 */
 
         this.myPlayer = this.physics.add.sprite(startX, startY, 'dude');
@@ -169,6 +231,8 @@ export class MainScene extends Phaser.Scene {
         this.myPlayer.body.setOffset(2, 0);
         this.myPlayer.setPushable(false);
         this.myPlayer.setDepth(10);
+        /* 카메라가 플레이어를 따라가도록 (우측 이동 제한 해제) */
+        this.cameras.main.startFollow(this.myPlayer, true, 0.1, 0.1);
 
         this.marker = this.add.graphics();
         this.marker.lineStyle(2, 0xffffff, 1);
@@ -208,10 +272,151 @@ export class MainScene extends Phaser.Scene {
         this.keySpace = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
         this.keyE = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
 
-        db.ref('players/' + this.myId).set({ x: startX, y: startY, nickname: this.myNickname, color: this.myColor, hp: 100, stone: 0, wood: 0, tribeId: null, tribeColor: null, reputation: 0, petType: null, hatType: null });
+        /* V17: 오프라인 시뮬레이션 — userData/블록 로드 후 catchUp 적용, 그 다음 players 설정 */
+        this.loadUserDataAndCatchUp(startX, startY, () => this.continueCreateAfterCatchUp());
+    }
 
+    /** V17: userData·블록 로드 → catchUp 적용 → players 설정 → onDisconnect/beforeunload */
+    loadUserDataAndCatchUp(startX, startY, onDone) {
+        const myId = this.myId;
+        db.ref('userData/' + myId).once('value', (userSnap) => {
+            db.ref('blocks').once('value', (blocksSnap) => {
+                const userData = userSnap.val() || {};
+                const blocksData = blocksSnap.val() || {};
+                const lastLogin = safeNum(userData.lastLoginTime, 0);
+                const now = Date.now();
+                const offlineSeconds = lastLogin > 0 ? (now - lastLogin) / 1000 : 0;
+
+                let petType = safeVal(userData.petType);
+                let petHunger = safeNum(userData.petHunger, 0);
+                let tribeId = safeVal(userData.tribeId);
+                let tribeColor = safeVal(userData.tribeColor);
+                const savedStone = safeNum(userData.stone, 0);
+                const savedWood = safeNum(userData.wood, 0);
+                const savedCrystal = safeNum(userData.crystal, 0);
+                const savedHp = Math.min(100, Math.max(0, safeNum(userData.hp, 100)));
+
+                if (offlineSeconds > 0) {
+                    const effectiveSeconds = offlineSeconds * OFFLINE_RATE;
+                    const is24hOrMore = offlineSeconds >= OFFLINE_24H_SEC;
+
+                    if (petType && (petType === 'koala' || petType === 'alpaca' || petType === 'gecko')) {
+                        petHunger += effectiveSeconds * PET_HUNGER_PER_SEC;
+                        if (petHunger >= PET_HUNGER_MAX || is24hOrMore) {
+                            petType = null;
+                            petHunger = 0;
+                        }
+                    }
+
+                    const myTotemKeys = Object.keys(blocksData).filter((k) => {
+                        const b = blocksData[k];
+                        return b && b.type === 'totem' && b.ownerId === myId;
+                    });
+                    for (const tk of myTotemKeys) {
+                        const totem = blocksData[tk];
+                        const curHp = safeNum(totem.hp, 10000);
+                        const damage = effectiveSeconds * TOTEM_ENTROPY_PER_SEC;
+                        const nhp = Math.max(0, curHp - damage);
+                        if (nhp <= 0 || is24hOrMore) {
+                            db.ref('blocks/' + tk).remove();
+                            if (tribeId === tk) { tribeId = null; tribeColor = null; }
+                        } else {
+                            db.ref('blocks/' + tk).update({ hp: nhp });
+                        }
+                    }
+
+                    if (offlineSeconds >= 60) {
+                        const timeStr = formatOfflineTime(offlineSeconds);
+                        const msgs = [];
+                        if (petType && petHunger > 20) msgs.push('펫이 배고파합니다!');
+                        if (myTotemKeys.length > 0) msgs.push('토템이 시간에 시달립니다.');
+                        if (petType === null && userData.petType) msgs.push('펫이 도망쳤습니다.');
+                        const msg = msgs.length > 0 ? `${timeStr}이 흘렀습니다. ${msgs.join(' ')}` : `${timeStr}이 흘렀습니다.`;
+                        this.time.delayedCall(800, () => this.showToast('당신이 떠나있는 동안 ' + msg));
+                    }
+                }
+
+                this.myPetHunger = Math.min(PET_HUNGER_MAX, petHunger);
+                this.myTribeId = tribeId;
+                this.myTribeColor = tribeColor;
+
+                const playerData = {
+                    x: startX, y: startY, nickname: this.myNickname, color: this.myColor,
+                    hp: savedHp, stone: savedStone, wood: savedWood, crystal: savedCrystal,
+                    tribeId, tribeColor, reputation: safeNum(userData.reputation, 0),
+                    petType, hatType: safeVal(userData.hatType), petHunger: this.myPetHunger
+                };
+                db.ref('players/' + myId).set(playerData);
+
+                db.ref('userData/' + myId).update({
+                    lastLoginTime: now, petType, petHunger: this.myPetHunger, tribeId, tribeColor,
+                    stone: playerData.stone, wood: playerData.wood, crystal: playerData.crystal, hp: playerData.hp, reputation: playerData.reputation, hatType: playerData.hatType
+                });
+                db.ref('userData/' + myId).onDisconnect().update({
+                    lastLoginTime: firebase.database.ServerValue.TIMESTAMP
+                });
+
+                const saveOnLeave = () => {
+                    db.ref('userData/' + myId).update({
+                        lastLoginTime: Date.now(),
+                        petType: this.myPetType,
+                        petHunger: this.myPetHunger,
+                        tribeId: this.myTribeId,
+                        tribeColor: this.myTribeColor,
+                        stone: this.myStone,
+                        wood: this.myWood,
+                        crystal: this.myCrystal,
+                        hp: this.myHp,
+                        reputation: this.myReputation,
+                        hatType: this.myHatType
+                    });
+                };
+                window.addEventListener('beforeunload', saveOnLeave);
+
+                db.ref('players/' + myId).onDisconnect().remove();
+
+                /* V17: 30초마다 userData 동기화 (크래시 시 데이터 손실 완화) */
+                this.time.addEvent({ delay: 30000, loop: true, callback: () => this.syncUserDataForOffline() });
+
+                onDone();
+            });
+        });
+    }
+
+    continueCreateAfterCatchUp() {
         this.maybeSpawnResources();
         this.time.addEvent({ delay: 15000, loop: true, callback: () => this.maybeSpawnResources() });
+        this.maybeSpawnCrystals();
+        this.time.addEvent({ delay: 20000, loop: true, callback: () => this.maybeSpawnCrystals() });
+
+        /* V18: 날씨 타이머 — 3분마다 랜덤 변경 */
+        const weatherTypes = ['clear', 'rain', 'acid_rain'];
+        db.ref('server/weather').once('value', (snap) => {
+            let w = snap.val();
+            if (!w || !weatherTypes.includes(w)) {
+                w = 'clear';
+                db.ref('server/weather').set(w);
+            }
+            this.weather = w;
+            this.updateWeatherEffects();
+            this.updateWeatherIndicator();
+        });
+        db.ref('server/weather').on('value', (snap) => {
+            const w = snap.val();
+            if (w && weatherTypes.includes(w)) {
+                this.weather = w;
+                this.updateWeatherEffects();
+                this.updateWeatherIndicator();
+            }
+        });
+        this.time.addEvent({
+            delay: WEATHER_INTERVAL_MS, loop: true,
+            callback: () => {
+                const next = weatherTypes[Math.floor(Math.random() * weatherTypes.length)];
+                db.ref('server/weather').set(next);
+                this.showToast(next === 'acid_rain' ? '☠️ 산성비!' : next === 'rain' ? '🌧 비' : '☀️ 맑음');
+            }
+        });
 
         const getTotemAt = (gx, gy) => {
             for (const k in this.totemsData) {
@@ -301,19 +506,21 @@ export class MainScene extends Phaser.Scene {
                         const newHp = Math.max(0, safeNum(d.hp, 100) - FIST_PLAYER_DAMAGE);
                         const sx = safeNum(d.x), sy = safeNum(d.y);
                         if (newHp <= 0) {
-                            let rx = Math.floor(Math.random() * 20) * 32 + 16, ry = Math.floor(Math.random() * 15) * 32 + 16;
+                            const stx = Math.floor(WORLD_WIDTH / 32), sty = Math.floor(WORLD_HEIGHT / 32);
+                            let rx = Math.floor(Math.random() * stx) * 32 + 16, ry = Math.floor(Math.random() * sty) * 32 + 16;
                             for (let i = 0; i < 10; i++) {
                                 if (!(rx >= PRISON_GRID_MIN && rx <= PRISON_GRID_MAX && ry >= PRISON_GRID_MIN && ry <= PRISON_GRID_MAX)) break;
-                                rx = Math.floor(Math.random() * 20) * 32 + 16;
-                                ry = Math.floor(Math.random() * 15) * 32 + 16;
+                                rx = Math.floor(Math.random() * stx) * 32 + 16;
+                                ry = Math.floor(Math.random() * sty) * 32 + 16;
                             }
                             const s = Math.floor(safeNum(d.stone) * 0.5);
                             const w = Math.floor(safeNum(d.wood) * 0.5);
-                            db.ref('players/' + pid).update({ x: rx, y: ry, hp: 100, stone: Math.max(0, safeNum(d.stone) - s), wood: Math.max(0, safeNum(d.wood) - w) });
-                            if (s > 0 || w > 0) {
+                            const c = Math.floor(safeNum(d.crystal) * 0.5);
+                            db.ref('players/' + pid).update({ x: rx, y: ry, hp: 100, stone: Math.max(0, safeNum(d.stone) - s), wood: Math.max(0, safeNum(d.wood) - w), crystal: Math.max(0, safeNum(d.crystal) - c) });
+                            if (s > 0 || w > 0 || c > 0) {
                                 const gx = Math.floor(sx / 32) * 32 + 16;
                                 const gy = Math.floor(sy / 32) * 32 + 16;
-                                db.ref('blocks/' + gx + '_' + gy).set({ x: gx, y: gy, type: 'drop', stone: s, wood: w });
+                                db.ref('blocks/' + gx + '_' + gy).set({ x: gx, y: gy, type: 'drop', stone: s, wood: w, crystal: c });
                             }
                         } else {
                             db.ref('players/' + pid).update({ hp: newHp });
@@ -351,6 +558,7 @@ export class MainScene extends Phaser.Scene {
                     if (confirm("이 부족에 충성을 맹세하시겠습니까?")) {
                         db.ref('players/' + this.myId).update({ tribeId: tk, tribeColor: totemAt.color });
                         this.myTribeId = tk; this.myTribeColor = totemAt.color;
+                        this.syncUserDataForOffline({ tribeId: tk, tribeColor: totemAt.color });
                     } else {
                         db.ref('blocks/' + tk).transaction((cur) => {
                             if (!cur || cur.type !== 'totem') return;
@@ -360,7 +568,10 @@ export class MainScene extends Phaser.Scene {
                                     const pl = s.val() || {};
                                     Object.keys(pl).forEach((pid) => {
                                         const pp = pl[pid];
-                                        if (pp && pp.tribeId === tk) db.ref('players/' + pid).update({ tribeId: null, tribeColor: null });
+                                        if (pp && pp.tribeId === tk) {
+                                            db.ref('players/' + pid).update({ tribeId: null, tribeColor: null });
+                                            if (pid === this.myId) this.syncUserDataForOffline({ tribeId: null, tribeColor: null });
+                                        }
                                     });
                                 });
                                 return null;
@@ -392,16 +603,15 @@ export class MainScene extends Phaser.Scene {
                     if (Phaser.Math.Distance.Between(x, y, safeNum(existing.x), safeNum(existing.y)) > 24) return;
                     this.handleShopClick(blockKey, existing);
                 } else if (existing && existing.type === 'drop') {
-                    const stone = safeNum(existing.stone), wood = safeNum(existing.wood);
-                    if (stone <= 0 && wood <= 0) return;
+                    const stone = safeNum(existing.stone), wood = safeNum(existing.wood), crystal = safeNum(existing.crystal);
+                    if (stone <= 0 && wood <= 0 && crystal <= 0) return;
                     db.ref('blocks/' + blockKey).remove();
                     db.ref('players/' + this.myId).once('value', (psnap) => {
                         const p = psnap.val();
                         if (!p) return;
-                        db.ref('players/' + this.myId).update({
-                            stone: safeNum(p.stone) + stone,
-                            wood: safeNum(p.wood) + wood
-                        });
+                        const up = { stone: safeNum(p.stone) + stone, wood: safeNum(p.wood) + wood };
+                        if (crystal > 0) up.crystal = safeNum(p.crystal) + crystal;
+                        db.ref('players/' + this.myId).update(up);
                     });
                 } else if (existing && (existing.type === 'rock' || existing.type === 'tree')) {
                     const res = existing.type === 'rock' ? 'stone' : 'wood';
@@ -421,6 +631,28 @@ export class MainScene extends Phaser.Scene {
                                     if (!p) return;
                                     const up = {}; up[res] = safeNum(p[res]) + 1;
                                     db.ref('players/' + this.myId).update(up);
+                                });
+                            }
+                            if (remain <= 0) db.ref('blocks/' + blockKey).remove();
+                        });
+                    }
+                } else if (existing && existing.type === 'crystal') {
+                    this.gatherProgress[blockKey] = (this.gatherProgress[blockKey] || 0) + 1;
+                    if (this.gatherProgress[blockKey] >= 2) {
+                        this.gatherProgress[blockKey] = 0;
+                        db.ref('blocks/' + blockKey).transaction((cur) => {
+                            if (!cur || safeNum(cur.remaining) <= 0) return;
+                            return { ...cur, remaining: Math.max(0, cur.remaining - 1) };
+                        }).then((r) => {
+                            const val = r.snapshot && r.snapshot.val();
+                            if (!r.committed || !val) return;
+                            const remain = safeNum(val.remaining);
+                            if (remain >= 0) {
+                                db.ref('players/' + this.myId).once('value', (snap) => {
+                                    const p = snap.val();
+                                    if (!p) return;
+                                    const c = safeNum(p.crystal) + 1;
+                                    db.ref('players/' + this.myId).update({ crystal: c });
                                 });
                             }
                             if (remain <= 0) db.ref('blocks/' + blockKey).remove();
@@ -467,6 +699,7 @@ export class MainScene extends Phaser.Scene {
                                 db.ref('blocks/' + blockKey).set({ x: gridX, y: gridY, type: 'totem', ownerId: this.myId, hp: 10000, color: this.myColor });
                                 db.ref('players/' + this.myId).update({ stone: s - 100, wood: w - 100, tribeId: blockKey, tribeColor: this.myColor });
                                 this.myTribeId = blockKey; this.myTribeColor = this.myColor;
+                                this.syncUserDataForOffline({ tribeId: blockKey, tribeColor: this.myColor });
                             } else if (this.currentMaterial === 'tnt') {
                                 db.ref('blocks/' + blockKey).set({ x: gridX, y: gridY, type: 'tnt', placedAt: Date.now() });
                                 db.ref('players/' + this.myId).update({ stone: s - cost.stone, wood: w - cost.wood, hp: h - cost.hp });
@@ -507,6 +740,45 @@ export class MainScene extends Phaser.Scene {
         };
         window.addEventListener('mousedown', onRightClick, true);
 
+        /* V16: 이모티콘 버튼 클릭 연동 */
+        document.querySelectorAll('.emoticon-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const emoji = btn.getAttribute('data-emoticon');
+                if (!emoji) return;
+                this.showEmoticonAbovePlayer(this.myPlayer, emoji, this.myId);
+                db.ref('players/' + this.myId).update({ emoticon: emoji, emoticonTime: Date.now() });
+            });
+        });
+
+        /* V17: 펫/모자 커스터마이징 버튼 클릭 연동 */
+        document.querySelectorAll('.customization-btn[data-pet]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const val = btn.getAttribute('data-pet') === 'none' ? null : btn.getAttribute('data-pet');
+                db.ref('players/' + this.myId).update({ petType: val });
+                this.syncUserDataForOffline({ petType: val });
+                this.showToast(val ? `펫: ${val}` : "펫 해제");
+                document.querySelectorAll('.customization-btn[data-pet]').forEach((b) => b.classList.remove('active'));
+                if (val) btn.classList.add('active');
+            });
+        });
+        document.querySelectorAll('.customization-btn[data-hat]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const val = btn.getAttribute('data-hat') === 'none' ? null : btn.getAttribute('data-hat');
+                db.ref('players/' + this.myId).update({ hatType: val });
+                this.showToast(val ? `모자: ${val}` : "모자 해제");
+                document.querySelectorAll('.customization-btn[data-hat]').forEach((b) => b.classList.remove('active'));
+                if (val) btn.classList.add('active');
+            });
+        });
+
+        /* V17: 진입 시 한 번 안내 토스트 */
+        if (!sessionStorage.getItem('fw_customization_toast')) {
+            sessionStorage.setItem('fw_customization_toast', '1');
+            this.time.delayedCall(1800, () => {
+                this.showToast("/pet koala로 펫을, /hat fedora로 모자를 바꿔보세요");
+            });
+        }
+
         const chatInput = document.getElementById('chat-input');
         if (chatInput) {
             chatInput.addEventListener('keydown', (e) => {
@@ -529,7 +801,11 @@ export class MainScene extends Phaser.Scene {
                         const valid = ['koala', 'alpaca', 'gecko'];
                         const val = (valid.includes(type) ? type : (type === 'none' || type === '' ? null : null));
                         if (type && !valid.includes(type)) { this.showToast("koala, alpaca, gecko 중 선택"); }
-                        else { db.ref('players/' + this.myId).update({ petType: val }); this.showToast(val ? `펫: ${val}` : "펫 해제"); }
+                        else {
+                            db.ref('players/' + this.myId).update({ petType: val });
+                            this.syncUserDataForOffline({ petType: val });
+                            this.showToast(val ? `펫: ${val}` : "펫 해제");
+                        }
                     } else if (msg.startsWith('/hat ') || msg === '/hat') {
                         const type = (msg.startsWith('/hat ') ? msg.slice(5).trim().toLowerCase() : '');
                         const val = (type === 'fedora' ? 'fedora' : (type === 'none' || type === '' ? null : null));
@@ -565,16 +841,17 @@ export class MainScene extends Phaser.Scene {
                 e.preventDefault();
                 const s = parseInt(prompt("떨어뜨릴 돌 개수:", "0") || "0", 10);
                 const w = parseInt(prompt("떨어뜨릴 나무 개수:", "0") || "0", 10);
-                if ((s > 0 || w > 0) && s >= 0 && w >= 0) {
+                const c = parseInt(prompt("떨어뜨릴 수정 개수:", "0") || "0", 10);
+                if ((s > 0 || w > 0 || c > 0) && s >= 0 && w >= 0 && c >= 0) {
                     db.ref('players/' + this.myId).once('value', (snap) => {
                         const p = snap.val();
                         if (!p) return;
-                        const ms = Math.min(s, safeNum(p.stone)), mw = Math.min(w, safeNum(p.wood));
-                        if (ms > 0 || mw > 0) {
+                        const ms = Math.min(s, safeNum(p.stone)), mw = Math.min(w, safeNum(p.wood)), mc = Math.min(c, safeNum(p.crystal));
+                        if (ms > 0 || mw > 0 || mc > 0) {
                             const gx = Math.floor(this.myPlayer.x / 32) * 32 + 16;
                             const gy = Math.floor(this.myPlayer.y / 32) * 32 + 16;
-                            db.ref('blocks/' + gx + '_' + gy).set({ x: gx, y: gy, type: 'drop', stone: ms, wood: mw });
-                            db.ref('players/' + this.myId).update({ stone: safeNum(p.stone) - ms, wood: safeNum(p.wood) - mw });
+                            db.ref('blocks/' + gx + '_' + gy).set({ x: gx, y: gy, type: 'drop', stone: ms, wood: mw, crystal: mc });
+                            db.ref('players/' + this.myId).update({ stone: safeNum(p.stone) - ms, wood: safeNum(p.wood) - mw, crystal: safeNum(p.crystal) - mc });
                         }
                     });
                 }
@@ -590,24 +867,45 @@ export class MainScene extends Phaser.Scene {
                 this.myText.y = this.myPlayer.y - 35;
                 this.drawHpBar(this.myHpBar, this.myPlayer.x, this.myPlayer.y - 28, safeNum(this.myHp, 100), 100);
                 if (this.myHatSprite) { this.myHatSprite.x = this.myPlayer.x; this.myHatSprite.y = this.myPlayer.y - 18; }
+                if (this.myEmoticonText) { this.myEmoticonText.x = this.myPlayer.x; this.myEmoticonText.y = this.myPlayer.y - 50; }
             }
         });
 
         db.ref('players/' + this.myId).on('value', (s) => {
             const d = s.val();
             if (!d) return;
+            const prevHp = this.myHp;
             this.myHp = safeNum(d.hp, 100);
             this.myStone = safeNum(d.stone);
             this.myWood = safeNum(d.wood);
+            this.myCrystal = safeNum(d.crystal);
+            this.myPetHunger = safeNum(d.petHunger, 0);
             this.myTribeId = safeVal(d.tribeId);
             this.myTribeColor = safeVal(d.tribeColor);
             this.myPlayer.setTint(d.tribeColor || d.color || this.myColor);
             if (ui.myStone) ui.myStone.innerText = this.myStone;
             if (ui.myWood) ui.myWood.innerText = this.myWood;
-            if (d.x !== undefined && d.y !== undefined) { this.myPlayer.x = d.x; this.myPlayer.y = d.y; }
+            if (ui.myCrystal) ui.myCrystal.innerText = this.myCrystal;
             this.myIsJailed = !!(d.isJailed);
             this.myJailedUntil = safeNum(d.jailedUntil, 0);
+            /* 자체 위치: 감옥·리스폰 시에만 서버 좌표 적용. 일반 이동 시 덮어쓰기 안 함 (우측 이동 끊김 방지) */
+            if (d.x !== undefined && d.y !== undefined) {
+                if (this.myIsJailed && this.myJailedUntil > 0) {
+                    this.myPlayer.x = d.x; this.myPlayer.y = d.y;
+                } else if (prevHp < 50 && this.myHp >= 100) {
+                    this.myPlayer.x = d.x; this.myPlayer.y = d.y;  /* 리스폰 */
+                }
+            }
             this.syncMyPetAndHat(safeVal(d.petType), safeVal(d.hatType), d.tribeColor || d.color || this.myColor);
+            /* V17: 펫/모자 버튼 active 상태 동기화 */
+            const petType = safeVal(d.petType);
+            const hatType = safeVal(d.hatType);
+            document.querySelectorAll('.customization-btn[data-pet]').forEach((b) => {
+                b.classList.toggle('active', b.getAttribute('data-pet') === (petType || 'none'));
+            });
+            document.querySelectorAll('.customization-btn[data-hat]').forEach((b) => {
+                b.classList.toggle('active', b.getAttribute('data-hat') === (hatType || 'none'));
+            });
             const rep = safeNum(d.reputation);
             this.myReputation = rep;
             const myDisplayName = (rep <= -10 ? '😈 ' : '') + (d.nickname || this.myNickname);
@@ -628,6 +926,8 @@ export class MainScene extends Phaser.Scene {
             }
             if (this.playerTexts[id]) { this.playerTexts[id].destroy(); delete this.playerTexts[id]; }
             if (this.playerHpBars[id]) { this.playerHpBars[id].destroy(); delete this.playerHpBars[id]; }
+            if (this.playerEmoticonTexts[id]) { this.playerEmoticonTexts[id].destroy(); delete this.playerEmoticonTexts[id]; }
+            delete this.playerLastEmoticonTime[id];
         });
 
         db.ref('blocks').on('child_added', (s) => this.createBlock(s.key, s.val()));
@@ -648,14 +948,17 @@ export class MainScene extends Phaser.Scene {
                     const pl = snap.val() || {};
                     Object.keys(pl).forEach((pid) => {
                         const pp = pl[pid];
-                        if (pp && pp.tribeId === key) db.ref('players/' + pid).update({ tribeId: null, tribeColor: null });
+                        if (pp && pp.tribeId === key) {
+                            db.ref('players/' + pid).update({ tribeId: null, tribeColor: null });
+                            if (pid === this.myId) this.syncUserDataForOffline({ tribeId: null, tribeColor: null });
+                        }
                     });
                 });
             }
             this.removeBlock(key);
         });
 
-        db.ref('players/' + this.myId).onDisconnect().remove();
+        /* onDisconnect().remove()는 loadUserDataAndCatchUp에서 설정됨 */
     }
 
     syncMyPetAndHat(petType, hatType, displayColor) {
@@ -676,6 +979,22 @@ export class MainScene extends Phaser.Scene {
             }
         }
         if (this.myHatSprite) { this.myHatSprite.x = this.myPlayer.x; this.myHatSprite.y = this.myPlayer.y - 18; }
+    }
+
+    /** V17: userData 동기화 (오프라인 시뮬레이션용). overrides로 즉시 반영된 값 전달 가능 */
+    syncUserDataForOffline(overrides = {}) {
+        db.ref('userData/' + this.myId).update({
+            petType: overrides.petType ?? this.myPetType,
+            petHunger: overrides.petHunger ?? this.myPetHunger,
+            tribeId: overrides.tribeId ?? this.myTribeId,
+            tribeColor: overrides.tribeColor ?? this.myTribeColor,
+            stone: overrides.stone ?? this.myStone,
+            wood: overrides.wood ?? this.myWood,
+            crystal: overrides.crystal ?? this.myCrystal,
+            hp: overrides.hp ?? this.myHp,
+            reputation: overrides.reputation ?? this.myReputation,
+            hatType: overrides.hatType ?? this.myHatType
+        });
     }
 
     showToast(msg) {
@@ -719,7 +1038,10 @@ export class MainScene extends Phaser.Scene {
                             const pl = s.val() || {};
                             Object.keys(pl).forEach((pid) => {
                                 const pp = pl[pid];
-                                if (pp && pp.tribeId === k) db.ref('players/' + pid).update({ tribeId: null, tribeColor: null });
+                                if (pp && pp.tribeId === k) {
+                                    db.ref('players/' + pid).update({ tribeId: null, tribeColor: null });
+                                    if (pid === this.myId) this.syncUserDataForOffline({ tribeId: null, tribeColor: null });
+                                }
                             });
                         });
                         return null;
@@ -739,19 +1061,21 @@ export class MainScene extends Phaser.Scene {
                 if (dist <= TNT_EXPLODE_RADIUS) {
                     const nhp = Math.max(0, safeNum(d.hp, 100) - TNT_PLAYER_DAMAGE);
                     if (nhp <= 0) {
-                        let rx = Math.floor(Math.random() * 20) * 32 + 16, ry = Math.floor(Math.random() * 15) * 32 + 16;
+                        const stx = Math.floor(WORLD_WIDTH / 32), sty = Math.floor(WORLD_HEIGHT / 32);
+                        let rx = Math.floor(Math.random() * stx) * 32 + 16, ry = Math.floor(Math.random() * sty) * 32 + 16;
                         for (let i = 0; i < 10; i++) {
                             if (!(rx >= PRISON_GRID_MIN && rx <= PRISON_GRID_MAX && ry >= PRISON_GRID_MIN && ry <= PRISON_GRID_MAX)) break;
-                            rx = Math.floor(Math.random() * 20) * 32 + 16;
-                            ry = Math.floor(Math.random() * 15) * 32 + 16;
+                            rx = Math.floor(Math.random() * stx) * 32 + 16;
+                            ry = Math.floor(Math.random() * sty) * 32 + 16;
                         }
                         const s = Math.floor(safeNum(d.stone) * 0.5);
                         const w = Math.floor(safeNum(d.wood) * 0.5);
-                        db.ref('players/' + pid).update({ x: rx, y: ry, hp: 100, stone: Math.max(0, safeNum(d.stone) - s), wood: Math.max(0, safeNum(d.wood) - w) });
-                        if (s > 0 || w > 0) {
+                        const c = Math.floor(safeNum(d.crystal) * 0.5);
+                        db.ref('players/' + pid).update({ x: rx, y: ry, hp: 100, stone: Math.max(0, safeNum(d.stone) - s), wood: Math.max(0, safeNum(d.wood) - w), crystal: Math.max(0, safeNum(d.crystal) - c) });
+                        if (s > 0 || w > 0 || c > 0) {
                             const gx = Math.floor((d.x || 0) / 32) * 32 + 16;
                             const gy = Math.floor((d.y || 0) / 32) * 32 + 16;
-                            db.ref('blocks/' + gx + '_' + gy).set({ x: gx, y: gy, type: 'drop', stone: s, wood: w });
+                            db.ref('blocks/' + gx + '_' + gy).set({ x: gx, y: gy, type: 'drop', stone: s, wood: w, crystal: c });
                         }
                     } else {
                         db.ref('players/' + pid).update({ hp: nhp });
@@ -784,7 +1108,8 @@ export class MainScene extends Phaser.Scene {
 
     spawnResources(rockNeed, treeNeed) {
         const positions = [];
-        for (let gx = 0; gx < 25; gx++) for (let gy = 0; gy < 19; gy++) {
+        const tilesX = Math.floor(WORLD_WIDTH / 32), tilesY = Math.floor(WORLD_HEIGHT / 32);
+        for (let gx = 0; gx < tilesX; gx++) for (let gy = 0; gy < tilesY; gy++) {
             const px = gx * 32 + 16, py = gy * 32 + 16;
             if (px >= PRISON_GRID_MIN && px <= PRISON_GRID_MAX && py >= PRISON_GRID_MIN && py <= PRISON_GRID_MAX) continue; /* V14: 감옥 구역 제외 */
             positions.push({ x: px, y: py, key: px + '_' + py });
@@ -831,13 +1156,17 @@ export class MainScene extends Phaser.Scene {
         } else if (data.type === 'rock') {
             block = this.resourceGroup.create(data.x, data.y, 'rock');
             block.body.setSize(32, 32); block.body.updateFromGameObject(); block.refreshBody(); block.setDepth(5);
+        } else if (data.type === 'crystal') {
+            block = this.resourceGroup.create(data.x, data.y, 'crystal');
+            block.body.setSize(32, 32); block.body.updateFromGameObject(); block.refreshBody(); block.setDepth(5);
         } else if (data.type === 'tree') {
             block = this.resourceGroup.create(data.x, data.y, 'tree');
             block.body.setSize(32, 32); block.body.updateFromGameObject(); block.refreshBody(); block.setDepth(5);
         } else if (data.type === 'drop') {
+            const txt = '🪨' + safeNum(data.stone) + ' 🪵' + safeNum(data.wood) + (safeNum(data.crystal) > 0 ? ' 💎' + safeNum(data.crystal) : '');
             block = this.add.container(data.x, data.y, [
                 this.add.image(0, 0, 'drop'),
-                this.add.text(0, -8, '🪨' + safeNum(data.stone) + ' 🪵' + safeNum(data.wood), { fontSize: '8px', fill: '#fff' }).setOrigin(0.5)
+                this.add.text(0, -8, txt, { fontSize: '8px', fill: '#fff' }).setOrigin(0.5)
             ]);
             block.setDepth(5);
             this.dropGroup.add(block);
@@ -939,6 +1268,14 @@ export class MainScene extends Phaser.Scene {
         else this.playerTexts[id].setStyle({ fill: '#fff', backgroundColor: '#00000088' });
         const fillColor = rep >= 10 ? '#FFD700' : rep <= -10 ? '#FF0000' : '#fff';
         if (data.chat && (type === 'change' || type === 'add')) this.showChatBubble(this.playerTexts[id], data.chat, displayName, fillColor);
+        /* V16: 이모티콘 수신 — 다른 유저의 이모티콘 표시 */
+        const emoticonTime = safeNum(data.emoticonTime, 0);
+        if (data.emoticon && emoticonTime > 0 && this.playerLastEmoticonTime[id] !== emoticonTime) {
+            if (Date.now() - emoticonTime < this.EMOTICON_DURATION + 500) {
+                this.playerLastEmoticonTime[id] = emoticonTime;
+                this.showEmoticonAbovePlayer(this.players[id], data.emoticon, id);
+            }
+        }
     }
 
     destroyPlayerPetAndHat(id) {
@@ -959,6 +1296,22 @@ export class MainScene extends Phaser.Scene {
         const pct = Math.max(0, Math.min(1, hp / maxHp));
         g.fillStyle(pct > 0.5 ? 0x4CAF50 : pct > 0.25 ? 0xFFC107 : 0xF44336, 0.9);
         g.fillRect(x - w / 2, y, w * pct, h);
+    }
+
+    showEmoticonAbovePlayer(sprite, emoji, playerId) {
+        const isMy = playerId === this.myId;
+        const prev = isMy ? this.myEmoticonText : this.playerEmoticonTexts[playerId];
+        if (prev) { prev.destroy(); if (isMy) this.myEmoticonText = null; else delete this.playerEmoticonTexts[playerId]; }
+        const txt = this.add.text(sprite.x, sprite.y - 50, emoji, {
+            fontSize: '24px',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            padding: { x: 6, y: 2 }
+        }).setOrigin(0.5).setDepth(12);
+        if (isMy) this.myEmoticonText = txt; else this.playerEmoticonTexts[playerId] = txt;
+        this.time.delayedCall(this.EMOTICON_DURATION, () => {
+            if (txt && txt.scene) txt.destroy();
+            if (isMy) this.myEmoticonText = null; else delete this.playerEmoticonTexts[playerId];
+        });
     }
 
     showChatBubble(textObj, msg, originalName, restoreFill = '#fff') {
@@ -1129,6 +1482,135 @@ export class MainScene extends Phaser.Scene {
         }, ANNOUNCEMENT_DURATION);
     }
 
+    /* V18: 날씨 시각 효과 — 파티클 & 필터 */
+    updateWeatherEffects() {
+        if (this.weatherEmitter) { this.weatherEmitter.destroy(); this.weatherEmitter = null; }
+        if (this.weatherParticles) { this.weatherParticles.destroy(); this.weatherParticles = null; }
+        document.getElementById('weather-acid-overlay')?.remove();
+        document.getElementById('weather-snow-overlay')?.remove();
+
+        const cam = this.cameras.main;
+        const snowBiome = this.myPlayer && this.myPlayer.y < BIOME_SNOW_Y;
+        const desertBiome = this.myPlayer && this.myPlayer.x > BIOME_DESERT_X;
+
+        if (this.weather === 'acid_rain') {
+            this.weatherParticles = this.add.particles('pixel');
+            this.weatherEmitter = this.weatherParticles.createEmitter({
+                x: { min: cam.scrollX - 50, max: cam.scrollX + cam.width + 50 },
+                y: cam.scrollY - 20,
+                lifespan: 700,
+                speedY: { min: 200, max: 300 },
+                scale: { start: 0.5, end: 0 },
+                quantity: 3,
+                frequency: 35,
+                tint: 0x00ff00
+            });
+            if (this.weatherParticles) this.weatherParticles.setScrollFactor(0);
+            this.weatherEmitter.setDepth(9998);
+            const overlay = document.createElement('div');
+            overlay.id = 'weather-acid-overlay';
+            overlay.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:7;background:rgba(0,80,0,0.12);';
+            document.getElementById('game-container')?.appendChild(overlay);
+        } else if (snowBiome) {
+            this.weatherParticles = this.add.particles('pixel');
+            this.weatherEmitter = this.weatherParticles.createEmitter({
+                x: { min: cam.scrollX - 30, max: cam.scrollX + cam.width + 30 },
+                y: cam.scrollY - 10,
+                lifespan: 1200,
+                speedY: { min: 40, max: 80 },
+                speedX: { min: -20, max: 20 },
+                scale: { start: 0.6, end: 0 },
+                quantity: 1,
+                frequency: 60,
+                tint: 0xffffff
+            });
+            if (this.weatherParticles) this.weatherParticles.setScrollFactor(0);
+            this.weatherEmitter.setDepth(9998);
+            const frostOverlay = document.createElement('div');
+            frostOverlay.id = 'weather-snow-overlay';
+            frostOverlay.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:7;background:radial-gradient(ellipse at center, transparent 50%, rgba(255,255,255,0.08) 100%);';
+            document.getElementById('game-container')?.appendChild(frostOverlay);
+        } else if (this.weather === 'rain') {
+            this.weatherParticles = this.add.particles('pixel');
+            this.weatherEmitter = this.weatherParticles.createEmitter({
+                x: { min: cam.scrollX - 50, max: cam.scrollX + cam.width + 50 },
+                y: cam.scrollY - 20,
+                lifespan: 800,
+                speedY: { min: 180, max: 280 },
+                scale: { start: 0.4, end: 0 },
+                quantity: 2,
+                frequency: 40,
+                blendMode: 'ADD'
+            });
+            if (this.weatherParticles) this.weatherParticles.setScrollFactor(0);
+            this.weatherEmitter.setDepth(9998);
+        } else if (desertBiome && this.weather === 'clear') {
+            this.weatherParticles = this.add.particles('pixel');
+            this.weatherEmitter = this.weatherParticles.createEmitter({
+                x: { min: cam.scrollX - 20, max: cam.scrollX + cam.width + 20 },
+                y: { min: cam.scrollY, max: cam.scrollY + cam.height },
+                lifespan: 400,
+                speedX: { min: 60, max: 120 },
+                speedY: { min: -30, max: 30 },
+                scale: { start: 0.3, end: 0 },
+                quantity: 1,
+                frequency: 80,
+                tint: 0xEDC9A4
+            });
+            if (this.weatherParticles) this.weatherParticles.setScrollFactor(0);
+            this.weatherEmitter.setDepth(9998);
+        }
+    }
+
+    updateWeatherIndicator() {
+        const el = document.getElementById('weather-indicator');
+        if (!el) return;
+        const labels = { clear: '☀️ 맑음', rain: '🌧 비', acid_rain: '☠️ 산성비' };
+        el.innerText = '날씨: ' + (labels[this.weather] || this.weather);
+    }
+
+    isPlayerUnderRoof(wx, wy) {
+        const gx = Math.floor(wx / 32) * 32 + 16;
+        const gy = Math.floor(wy / 32) * 32 + 16;
+        const aboveKey = `${gx}_${gy - 32}`;
+        return !!this.blocks[aboveKey];
+    }
+
+    maybeSpawnCrystals() {
+        db.ref('blocks').once('value', (snap) => {
+            const v = snap.val() || {};
+            const snowCrystals = Object.values(v).filter((b) => b && b.type === 'crystal' && safeNum(b.y) < BIOME_SNOW_Y + 100).length;
+            const desertCrystals = Object.values(v).filter((b) => b && b.type === 'crystal' && safeNum(b.x) > BIOME_DESERT_X - 100).length;
+            const snowNeed = Math.max(0, CRYSTAL_TARGET - snowCrystals);
+            const desertNeed = Math.max(0, CRYSTAL_TARGET - desertCrystals);
+            if (snowNeed > 0 || desertNeed > 0) this.spawnCrystals(snowNeed, desertNeed);
+        });
+    }
+
+    spawnCrystals(snowNeed, desertNeed) {
+        const snowPos = [], desertPos = [];
+        const tilesX = Math.floor(WORLD_WIDTH / 32), tilesY = Math.floor(WORLD_HEIGHT / 32);
+        for (let gx = 0; gx < tilesX; gx++) for (let gy = 0; gy < 3; gy++) {
+            const px = gx * 32 + 16, py = gy * 32 + 16;
+            if (px >= PRISON_GRID_MIN && px <= PRISON_GRID_MAX && py >= PRISON_GRID_MIN && py <= PRISON_GRID_MAX) continue;
+            snowPos.push({ x: px, y: py, key: px + '_' + py });
+        }
+        const desertStart = Math.max(0, tilesX - 3);
+        for (let gx = desertStart; gx < tilesX; gx++) for (let gy = 0; gy < tilesY; gy++) {
+            const px = gx * 32 + 16, py = gy * 32 + 16;
+            if (px >= PRISON_GRID_MIN && px <= PRISON_GRID_MAX && py >= PRISON_GRID_MIN && py <= PRISON_GRID_MAX) continue;
+            desertPos.push({ x: px, y: py, key: px + '_' + py });
+        }
+        Phaser.Utils.Array.Shuffle(snowPos);
+        Phaser.Utils.Array.Shuffle(desertPos);
+        snowPos.slice(0, Math.min(snowNeed, snowPos.length)).forEach((p) => {
+            db.ref('blocks/' + p.key).transaction((cur) => (!cur ? { x: p.x, y: p.y, type: 'crystal', remaining: CRYSTAL_REMAINING } : undefined));
+        });
+        desertPos.slice(0, Math.min(desertNeed, desertPos.length)).forEach((p) => {
+            db.ref('blocks/' + p.key).transaction((cur) => (!cur ? { x: p.x, y: p.y, type: 'crystal', remaining: CRYSTAL_REMAINING } : undefined));
+        });
+    }
+
     update() {
         if (!this.myPlayer) return;
         const now = Date.now();
@@ -1169,13 +1651,70 @@ export class MainScene extends Phaser.Scene {
         }
 
         const pointer = this.input.activePointer;
-        this.marker.x = Math.floor(pointer.worldX / 32) * 32;
-        this.marker.y = Math.floor(pointer.worldY / 32) * 32;
+        const mx = Phaser.Math.Clamp(Math.floor(pointer.worldX / 32) * 32, 0, WORLD_WIDTH - 32);
+        const my = Phaser.Math.Clamp(Math.floor(pointer.worldY / 32) * 32, 0, WORLD_HEIGHT - 32);
+        this.marker.x = mx;
+        this.marker.y = my;
         this.marker.clear();
         this.marker.lineStyle(2, this.shiftKey.isDown ? 0xff0000 : 0xffffff, 1);
         this.marker.strokeRect(0, 0, 32, 32);
 
-        const speed = 160;
+        /* V18: 지역(Biome) & 날씨 효과 */
+        const snowBiome = this.myPlayer.y < BIOME_SNOW_Y;
+        const desertBiome = this.myPlayer.x > BIOME_DESERT_X;
+        let speed = 160;
+        if (desertBiome) speed *= DESERT_SPEED_MULT;
+
+        /* 설원: 매초 HP -1 */
+        this.snowDamageAccum = (this.snowDamageAccum || 0) + (snowBiome ? 1 : 0);
+        if (this.snowDamageAccum >= 60) {
+            this.snowDamageAccum = 0;
+            if (snowBiome) {
+                db.ref('players/' + this.myId).once('value', (snap) => {
+                    const d = snap.val();
+                    if (!d) return;
+                    const nhp = Math.max(0, safeNum(d.hp, 100) - SNOW_HP_PER_SEC);
+                    db.ref('players/' + this.myId).update({ hp: nhp });
+                });
+            }
+        }
+        if (!snowBiome) this.snowDamageAccum = 0;
+
+        /* 산성비: 지붕 없으면 플레이어·토템 데미지 */
+        if (this.weather === 'acid_rain') {
+            this.acidRainDamageAccum = (this.acidRainDamageAccum || 0) + 1;
+            if (this.acidRainDamageAccum >= 60) {
+                this.acidRainDamageAccum = 0;
+                if (!this.isPlayerUnderRoof(this.myPlayer.x, this.myPlayer.y)) {
+                    db.ref('players/' + this.myId).once('value', (snap) => {
+                        const d = snap.val();
+                        if (!d) return;
+                        const nhp = Math.max(0, safeNum(d.hp, 100) - ACID_RAIN_DAMAGE);
+                        db.ref('players/' + this.myId).update({ hp: nhp });
+                    });
+                }
+                for (const key in this.totemsData) {
+                    const t = this.totemsData[key];
+                    if (!t) continue;
+                    const aboveKey = `${Math.floor(t.x / 32) * 32 + 16}_${Math.floor(t.y / 32) * 32 + 16 - 32}`;
+                    if (!this.blocks[aboveKey]) {
+                        db.ref('blocks/' + key).transaction((cur) => {
+                            if (!cur || cur.type !== 'totem') return;
+                            const nhp = Math.max(0, safeNum(cur.hp, 10000) - ACID_RAIN_BLOCK_DAMAGE);
+                            return nhp <= 0 ? null : { ...cur, hp: nhp };
+                        });
+                    }
+                }
+            }
+        } else { this.acidRainDamageAccum = 0; }
+
+        /* 날씨 효과 주기적 갱신 (바이옴 전환 시) */
+        if (this._lastSnowBiome !== snowBiome || this._lastDesertBiome !== desertBiome) {
+            this._lastSnowBiome = snowBiome;
+            this._lastDesertBiome = desertBiome;
+            this.updateWeatherEffects();
+        }
+
         this.myPlayer.setVelocity(0);
         const isJailedNow = this.myIsJailed && this.myJailedUntil > 0 && Date.now() < this.myJailedUntil;
         if (!isJailedNow && document.activeElement !== (ui.chatInput || null)) {
@@ -1183,6 +1722,16 @@ export class MainScene extends Phaser.Scene {
             else if (this.keyD.isDown) { this.myPlayer.setVelocityX(speed); this.lastDir.x = 1; this.lastDir.y = 0; }
             if (this.keyW.isDown) { this.myPlayer.setVelocityY(-speed); this.lastDir.x = 0; this.lastDir.y = -1; }
             else if (this.keyS.isDown) { this.myPlayer.setVelocityY(speed); this.lastDir.x = 0; this.lastDir.y = 1; }
+        }
+
+        /* V16: 다른 유저 이모티콘 위치 추적 */
+        for (const id in this.playerEmoticonTexts) {
+            const p = this.players[id];
+            const txt = this.playerEmoticonTexts[id];
+            if (p && txt && txt.scene) {
+                txt.x = p.x;
+                txt.y = p.y - 50;
+            }
         }
 
         /* V15: 펫 추적 (Lerp, 40px 유지) */

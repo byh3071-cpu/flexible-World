@@ -10,3 +10,4 @@ try {
     console.error(e);
 }
 export const db = firebase.database();
+export const auth = firebase.auth();

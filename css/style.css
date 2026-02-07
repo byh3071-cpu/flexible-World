@@ -16,15 +16,33 @@
     --accent-glow: rgba(212, 160, 23, 0.25);
 }
 
+* { box-sizing: border-box; }
+html {
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    max-width: 100vw;
+    max-height: 100vh;
+}
 html, body { 
     margin: 0; 
-    background-color: var(--noir-black); 
+    padding: 0;
+    position: fixed;
+    inset: 0;
+    background: 
+        radial-gradient(ellipse 120% 80% at 50% 120%, rgba(26, 20, 30, 0.6) 0%, transparent 50%),
+        radial-gradient(ellipse 80% 60% at 50% 0%, rgba(20, 18, 28, 0.4) 0%, transparent 60%),
+        linear-gradient(180deg, #0d0c12 0%, #0a0a0b 40%, #0c0a0e 100%);
+    background-color: var(--noir-black);
     color: #e8e8e8; 
     display: flex; 
     justify-content: center; 
     align-items: center; 
-    height: 100vh; 
-    overflow: hidden; 
+    min-height: 100vh;
+    height: 100vh;
+    overflow: hidden !important;
+    overflow-x: hidden;
+    overflow-y: hidden;
     font-family: 'Cormorant Garamond', 'Georgia', serif;
     user-select: none;
     -webkit-user-select: none;
@@ -34,26 +52,42 @@ html, body {
     overscroll-behavior: none;
     overscroll-behavior-y: contain;
     -webkit-user-drag: none;
-    position: fixed; 
-    width: 100%;
+}
+
+#game-wrapper {
+    position: relative;
+    width: 800px;
+    height: 600px;
+    max-width: 100vw;
+    max-height: 100vh;
+    flex-shrink: 0;
+    overflow: hidden;
 }
 
 #game-container { 
     touch-action: none; 
-    position: relative;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 800px;
+    height: 600px;
 }
 
 #game-container canvas { 
-    border: 2px solid var(--noir-gray); 
-    box-shadow: 0 0 60px rgba(0,0,0,0.8), inset 0 0 80px rgba(0,0,0,0.3); 
+    border: 1px solid rgba(107, 107, 115, 0.3); 
+    box-shadow: 
+        0 0 80px rgba(0,0,0,0.6),
+        0 0 20px rgba(212, 160, 23, 0.03),
+        inset 0 0 60px rgba(0,0,0,0.25); 
     touch-action: none; 
 }
 
-/* UI 레이어 — 타자기/기록장 느낌 */
+/* UI 레이어 — 타자기/기록장 느낌 (game-wrapper 기준) */
 #ui-layer { 
     position: absolute; 
     top: 10px; 
     left: 10px; 
+    right: 10px;
     pointer-events: none; 
     z-index: 10; 
     text-align: left; 
@@ -95,15 +129,30 @@ html, body {
     font-size: 12px;
 }
 
+#customization-guide {
+    margin: 4px 0;
+    font-size: 10px;
+    color: var(--noir-silver);
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.02em;
+}
+#weather-indicator {
+    margin: 2px 0;
+    font-size: 10px;
+    color: var(--noir-silver);
+    font-family: 'JetBrains Mono', monospace;
+}
 #status {
     color: var(--accent-amber);
     font-size: 11px;
 }
 
-/* 채팅창 — 버려진 세상의 메아리 */
+/* 채팅창 — 버려진 세상의 메아리 (game-wrapper 기준) */
 #chat-container { 
     position: absolute; 
     bottom: 24px; 
+    left: 0;
+    right: 0;
     width: 100%; 
     text-align: center; 
     pointer-events: none; 
@@ -250,7 +299,7 @@ html, body {
     inset: 0;
     pointer-events: none;
     z-index: 5;
-    background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.5) 100%);
+    background: radial-gradient(ellipse at center, transparent 35%, rgba(0,0,0,0.4) 70%, rgba(5,4,8,0.9) 100%);
 }
 /* 그레인 오버레이 */
 #game-container::before {
@@ -393,4 +442,88 @@ html, body {
     0% { transform: translate(-50%, -50%) scale(0.8); opacity: 0; }
     50% { transform: translate(-50%, -50%) scale(1.1); }
     100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+/* V17: 펫/모자 커스터마이징 버튼 (game-wrapper 기준) */
+#customization-container {
+    position: absolute;
+    bottom: 90px;
+    right: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    z-index: 10;
+    pointer-events: auto;
+}
+.customization-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.customization-label {
+    font-size: 10px;
+    color: var(--noir-muted);
+    width: 32px;
+    font-family: 'JetBrains Mono', monospace;
+}
+.customization-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    font-size: 18px;
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    background: rgba(10, 10, 11, 0.7);
+    color: #fff;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+.customization-btn:hover {
+    background: rgba(26, 26, 29, 0.9);
+    transform: scale(1.06);
+    border-color: var(--accent-amber);
+}
+.customization-btn.active {
+    border-color: var(--accent-amber);
+    box-shadow: 0 0 10px var(--accent-glow);
+}
+
+/* V16: 이모티콘 시스템 — 말 없이 소통하기 (game-wrapper 기준) */
+#emoticon-container {
+    position: absolute;
+    bottom: 24px;
+    right: 24px;
+    display: flex;
+    gap: 8px;
+    z-index: 10;
+    pointer-events: auto;
+}
+.emoticon-btn {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    font-size: 22px;
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    background: rgba(10, 10, 11, 0.7);
+    color: #fff;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.emoticon-btn:hover {
+    background: rgba(26, 26, 29, 0.9);
+    transform: scale(1.08);
+    box-shadow: 0 0 16px var(--accent-glow);
+    border-color: var(--accent-amber);
+}
+.emoticon-btn:active {
+    transform: scale(0.95);
 }

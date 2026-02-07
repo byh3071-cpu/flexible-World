@@ -12,7 +12,10 @@
           (!newData.hasChild('wood') || (newData.child('wood').isNumber() && newData.child('wood').val() >= 0 && newData.child('wood').val() <= 99999)) &&
           (!newData.hasChild('nickname') || (newData.child('nickname').isString() && newData.child('nickname').val().length <= 20)) &&
           (!newData.hasChild('reputation') || (newData.child('reputation').isNumber() && newData.child('reputation').val() >= -100 && newData.child('reputation').val() <= 100)) &&
-          (!newData.hasChild('chat') || (newData.child('chat').isString() && newData.child('chat').val().length <= 100))"
+          (!newData.hasChild('chat') || (newData.child('chat').isString() && newData.child('chat').val().length <= 100)) &&
+          (!newData.hasChild('crystal') || (newData.child('crystal').isNumber() && newData.child('crystal').val() >= 0 && newData.child('crystal').val() <= 99999)) &&
+          (!newData.hasChild('jailedUntil') || (newData.child('jailedUntil').isNumber() && newData.child('jailedUntil').val() >= 0)) &&
+          (!newData.hasChild('petHunger') || (newData.child('petHunger').isNumber() && newData.child('petHunger').val() >= 0 && newData.child('petHunger').val() <= 100))"
       }
     },
     "blocks": {
@@ -20,7 +23,7 @@
       "$blockKey": {
         ".write": "auth != null",
         ".validate": "newData.hasChild('type') &&
-          newData.child('type').val().matches('^(wall|grass|water|sign|door|totem|tnt|shop|rock|tree|drop)$') &&
+          newData.child('type').val().matches('^(wall|grass|water|sign|door|totem|tnt|shop|rock|tree|drop|crystal)$') &&
           newData.child('x').isNumber() &&
           newData.child('x').val() >= 0 &&
           newData.child('x').val() <= 900 &&
@@ -31,11 +34,17 @@
           (!newData.hasChild('stone') || (newData.child('stone').isNumber() && newData.child('stone').val() >= 0 && newData.child('stone').val() <= 9999)) &&
           (!newData.hasChild('wood') || (newData.child('wood').isNumber() && newData.child('wood').val() >= 0 && newData.child('wood').val() <= 9999)) &&
           (!newData.hasChild('text') || (newData.child('text').isString() && newData.child('text').val().length <= 500)) &&
-          (!newData.hasChild('hp') || (newData.child('hp').isNumber() && newData.child('hp').val() >= 0 && newData.child('hp').val() <= 10000))"
+          (!newData.hasChild('hp') || (newData.child('hp').isNumber() && newData.child('hp').val() >= 0 && newData.child('hp').val() <= 10000)) &&
+          (!newData.hasChild('crystal') || (newData.child('crystal').isNumber() && newData.child('crystal').val() >= 0 && newData.child('crystal').val() <= 9999)) &&
+          (!newData.hasChild('remaining') || (newData.child('remaining').isNumber() && newData.child('remaining').val() >= 0 && newData.child('remaining').val() <= 99))"
       }
     },
     "server": {
       ".read": "auth != null",
+      "weather": {
+        ".write": "auth != null",
+        ".validate": "!newData.hasChildren() && newData.val().matches('^(clear|rain|acid_rain)$')"
+      },
       "announcement": {
         ".write": "auth != null",
         ".validate": "newData.hasChildren(['message','author','timestamp']) &&
@@ -44,6 +53,19 @@
           newData.child('author').isString() &&
           newData.child('author').val().length <= 20 &&
           newData.child('timestamp').isNumber()"
+      }
+    },
+    "userData": {
+      ".read": "auth != null",
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "(!newData.hasChild('lastLoginTime') || newData.child('lastLoginTime').isNumber()) &&
+          (!newData.hasChild('petHunger') || (newData.child('petHunger').isNumber() && newData.child('petHunger').val() >= 0 && newData.child('petHunger').val() <= 100)) &&
+          (!newData.hasChild('stone') || (newData.child('stone').isNumber() && newData.child('stone').val() >= 0 && newData.child('stone').val() <= 99999)) &&
+          (!newData.hasChild('wood') || (newData.child('wood').isNumber() && newData.child('wood').val() >= 0 && newData.child('wood').val() <= 99999)) &&
+          (!newData.hasChild('crystal') || (newData.child('crystal').isNumber() && newData.child('crystal').val() >= 0 && newData.child('crystal').val() <= 99999)) &&
+          (!newData.hasChild('hp') || (newData.child('hp').isNumber() && newData.child('hp').val() >= 0 && newData.child('hp').val() <= 100))"
       }
     },
     ".info": {

@@ -1,10 +1,13 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Flexible-World: 펫 & 커스터마이징 (V15)</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>Flexible-World: 환경·날씨 (V18)</title>
     <link rel="stylesheet" href="css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-database-compat.js"></script>
 </head>
 <body>
@@ -19,13 +22,16 @@
         </div>
     </div>
 
+    <div id="game-wrapper">
     <div id="ui-layer">
-        <h2>V15: 펫 & 커스터마이징</h2>
+        <h2>V18: 환경·날씨 & V17 오프라인 시뮬레이션</h2>
         <div id="inventory">
-            🪨 돌: <span id="my-stone">0</span> | 🪵 나무: <span id="my-wood">0</span> | E: 떨어뜨리기
+            🪨 돌: <span id="my-stone">0</span> | 🪵 나무: <span id="my-wood">0</span> | 💎 수정: <span id="my-crystal">0</span> | E: 떨어뜨리기
         </div>
         <div id="material-indicator">현재 재료: 🔲 돌벽 (1, 돌 1개)</div>
         <p>WASD: 이동 | Space: 밀치기 | 클릭: 건설/채집/공격 | 1~9: 재료/진압봉 | Shift: 파괴</p>
+        <div id="customization-guide">펫: /pet koala | 모자: /hat fedora | 색상: /color #FF0000</div>
+        <div id="weather-indicator">날씨: —</div>
         <div id="status">대기 중...</div>
     </div>
 
@@ -35,11 +41,32 @@
         <input type="text" id="chat-input" placeholder="대화 /pet koala /hat fedora /color #FF0000" maxlength="50">
     </div>
 
+    <div id="customization-container">
+        <div class="customization-row">
+            <span class="customization-label">펫</span>
+            <button type="button" class="customization-btn" data-pet="none" title="펫 해제">✕</button>
+            <button type="button" class="customization-btn" data-pet="koala" title="코알라">🐨</button>
+            <button type="button" class="customization-btn" data-pet="alpaca" title="알파카">🦙</button>
+            <button type="button" class="customization-btn" data-pet="gecko" title="도마뱀">🦎</button>
+        </div>
+        <div class="customization-row">
+            <span class="customization-label">모자</span>
+            <button type="button" class="customization-btn" data-hat="none" title="모자 해제">✕</button>
+            <button type="button" class="customization-btn" data-hat="fedora" title="페도라">🎩</button>
+        </div>
+    </div>
+    <div id="emoticon-container">
+        <button type="button" class="emoticon-btn" data-emoticon="❤️" title="좋아요">❤️</button>
+        <button type="button" class="emoticon-btn" data-emoticon="😡" title="화남">😡</button>
+        <button type="button" class="emoticon-btn" data-emoticon="👋" title="인사">👋</button>
+    </div>
+
     <div id="announcement-box" class="announcement-box"></div>
     <div id="trade-success-box" class="trade-success-box"></div>
     <div id="reputation-menu" class="reputation-menu" style="display:none;">
         <button type="button" class="reputation-btn reputation-up" title="칭찬">👍</button>
         <button type="button" class="reputation-btn reputation-down" title="비난">👎</button>
+    </div>
     </div>
 
     <script type="module" src="js/game.js"></script>
